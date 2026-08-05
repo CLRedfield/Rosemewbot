@@ -88,6 +88,7 @@ export interface NativeRuntimeService {
   state: "running" | "stopped" | "missing" | "error";
   status: string;
   version: string | null;
+  startedAt: string | null;
 }
 
 export interface NativeCompatibilityComponent {
@@ -189,6 +190,7 @@ interface RuntimeSecrets {
 interface ProcessRecord {
   astrbot?: number;
   napcat?: number;
+  startedAt?: Partial<Record<NativeServiceId, string>>;
 }
 
 interface TcpConnection {
@@ -214,7 +216,7 @@ export const COMPONENT_POLICY = componentLock as {
 };
 const githubHeaders = {
   Accept: "application/vnd.github+json",
-  "User-Agent": "Rosemewbot-Native/0.5",
+  "User-Agent": "Rosemewbot-Native/0.5.3",
   "X-GitHub-Api-Version": "2022-11-28",
 };
 const managedNapCatConnectionName = "Rosemewbot · AstrBot";
@@ -1340,6 +1342,7 @@ export class NativeRuntimeManager {
       child.unref();
       const records = await this.processRecords();
       records[service] = child.pid;
+      records.startedAt = { ...records.startedAt, [service]: new Date().toISOString() };
       await this.saveProcessRecords(records);
     } finally {
       closeSync(stdout);
@@ -1396,6 +1399,10 @@ export class NativeRuntimeManager {
       }
     }
     delete records[service];
+    if (records.startedAt) {
+      delete records.startedAt[service];
+      if (Object.keys(records.startedAt).length === 0) delete records.startedAt;
+    }
     await this.saveProcessRecords(records);
   }
 
@@ -1484,6 +1491,7 @@ export class NativeRuntimeManager {
           state: !napcatInstalled ? "missing" : napcatRunning ? "running" : "stopped",
           status: !napcatInstalled ? "等待一键准备" : napcatRunning ? "本机进程运行中" : "已安装，尚未启动",
           version: manifest.napcatVersion ?? null,
+          startedAt: napcatRunning ? records.startedAt?.napcat ?? null : null,
         },
         {
           id: "astrbot",
@@ -1492,6 +1500,7 @@ export class NativeRuntimeManager {
           state: !astrbotInstalled ? "missing" : astrbotRunning ? "running" : "stopped",
           status: !astrbotInstalled ? "等待一键准备" : astrbotRunning ? "本机进程运行中" : "已安装，尚未启动",
           version: manifest.astrbotVersion ?? null,
+          startedAt: astrbotRunning ? records.startedAt?.astrbot ?? null : null,
         },
       ],
       runtimeDir: this.runtimeDir,

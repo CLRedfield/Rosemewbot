@@ -596,8 +596,8 @@ async function createMainWindow() {
       })()`);
       if (!selected) throw new Error(`Capture theme option not found: ${captureTheme}`);
     }
-    if (["runtime", "onboarding", "status", "diagnostics"].includes(captureView ?? "")) {
-      const labels: Record<string, string> = { runtime: "运行控制", onboarding: "接入向导", status: "运行状态", diagnostics: "故障诊断" };
+    if (["runtime", "napcat", "astrbot", "onboarding", "status", "diagnostics"].includes(captureView ?? "")) {
+      const labels: Record<string, string> = { runtime: "运行控制", napcat: "NapCat 设置", astrbot: "AstrBot 设置", onboarding: "接入向导", status: "运行状态", diagnostics: "故障诊断" };
       const selected = await mainWindow.webContents.executeJavaScript(`(() => {
         const button = [...document.querySelectorAll('.sidebar nav button')]
           .find((item) => item.textContent?.includes(${JSON.stringify(labels[captureView!])}));

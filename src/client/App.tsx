@@ -57,6 +57,7 @@ import type {
   StackStatus,
   ViewId,
 } from "./types";
+import { createFirstSetupPlan, getRuntimeServicePresentation } from "./runtime-logic";
 
 const fallbackConfig: PublicConfig = {
   astrbotUrl: "http://localhost:6185",
@@ -174,12 +175,12 @@ function usePersistentSteps() {
   return { completed, toggle };
 }
 
-function StatusPill({ state, detail = false }: { state: ServiceProbe["state"]; detail?: boolean }) {
+function StatusPill({ state, detail = false, label }: { state: ServiceProbe["state"]; detail?: boolean; label?: string }) {
   const copy = serviceCopy[state];
   return (
     <span className={`status-pill ${copy.className}`}>
       <span className="status-dot" />
-      {detail ? copy.label : <span className="sr-only">{copy.label}</span>}
+      {detail ? label ?? copy.label : <span className="sr-only">{label ?? copy.label}</span>}
     </span>
   );
 }
@@ -297,7 +298,7 @@ function boundsForElement(element: HTMLElement): EmbeddedPanelBounds {
   };
 }
 
-function EmbeddedPanelWorkspace({ panel, runtime, suspended = false }: { panel: EmbeddedPanelId; runtime: DesktopRuntimeState | null; suspended?: boolean }) {
+function EmbeddedPanelWorkspace({ panel, runtime, suspended = false, onOpenRuntime }: { panel: EmbeddedPanelId; runtime: DesktopRuntimeState | null; suspended?: boolean; onOpenRuntime: () => void }) {
   const desktop = window.rosemewbotDesktop;
   const hostRef = useRef<HTMLDivElement>(null);
   const label = panel === "napcat" ? "NapCat" : "AstrBot";
@@ -313,6 +314,10 @@ function EmbeddedPanelWorkspace({ panel, runtime, suspended = false }: { panel: 
   useEffect(() => {
     if (!desktop) return;
     if (suspended) {
+      void desktop.hidePanel(panel);
+      return;
+    }
+    if (!running) {
       void desktop.hidePanel(panel);
       return;
     }
@@ -355,10 +360,10 @@ function EmbeddedPanelWorkspace({ panel, runtime, suspended = false }: { panel: 
       unsubscribe();
       void desktop.hidePanel(panel);
     };
-  }, [desktop, label, panel, suspended]);
+  }, [desktop, label, panel, running, suspended]);
 
   const reload = async () => {
-    if (!desktop) return;
+    if (!desktop || !running) return;
     setPanelState({ panel, state: "loading", message: `正在重新载入 ${label} 设置` });
     try {
       await desktop.reloadPanel(panel);
@@ -370,6 +375,8 @@ function EmbeddedPanelWorkspace({ panel, runtime, suspended = false }: { panel: 
       });
     }
   };
+
+  const displayState = !service?.installed ? "missing" : !running ? "offline" : panelState.state;
 
   return (
     <section className="embedded-workspace view-enter" aria-label={`${label} 内嵌设置`}>
@@ -385,23 +392,25 @@ function EmbeddedPanelWorkspace({ panel, runtime, suspended = false }: { panel: 
           <span />
           {running ? "服务运行中" : service?.installed ? "服务未启动" : "组件未准备"}
         </div>
-        <div className={`embedded-load-state state-${panelState.state}`} role="status" aria-live="polite">
-          {panelState.state === "loading" && <RefreshCw size={13} className="spin" />}
-          {panelState.state === "ready" && <Check size={13} />}
-          {panelState.state === "error" && <CircleAlert size={13} />}
-          <span>{panelState.state === "loading" ? "载入中" : panelState.state === "ready" ? "已连接" : "连接失败"}</span>
+        <div className={`embedded-load-state state-${displayState}`} role="status" aria-live="polite">
+          {displayState === "loading" && <RefreshCw size={13} className="spin" />}
+          {displayState === "ready" && <Check size={13} />}
+          {displayState === "error" && <CircleAlert size={13} />}
+          {(displayState === "offline" || displayState === "missing") && <Power size={13} />}
+          <span>{displayState === "loading" ? "载入中" : displayState === "ready" ? "已连接" : displayState === "offline" ? "等待启动" : displayState === "missing" ? "等待准备" : "连接失败"}</span>
         </div>
-        <button className="embedded-reload" type="button" onClick={() => void reload()} title={`重新载入 ${label}`}>
+        <button className="embedded-reload" type="button" disabled={!running} onClick={() => void reload()} title={running ? `重新载入 ${label}` : "请先启动机器人"}>
           <RefreshCw size={15} />
           重新载入
         </button>
       </header>
-      <div className={`embedded-panel-host host-${panelState.state}`} ref={hostRef}>
+      <div className={`embedded-panel-host host-${displayState}`} ref={hostRef}>
         <div className="embedded-placeholder">
-          {panelState.state === "error" ? <CircleAlert size={28} /> : panel === "napcat" ? <Bot size={28} /> : <Server size={28} />}
-          <strong>{panelState.state === "error" ? `${label} 暂时无法打开` : `正在打开 ${label}`}</strong>
-          <p>{panelState.state === "error" ? panelState.message : "完整设置会显示在这个区域，切换页面不会丢失当前进度。"}</p>
-          {panelState.state === "error" && <button className="button button-secondary" type="button" onClick={() => void reload()}><RefreshCw size={14} />重试</button>}
+          {displayState === "error" ? <CircleAlert size={28} /> : displayState === "offline" || displayState === "missing" ? <Power size={28} /> : panel === "napcat" ? <Bot size={28} /> : <Server size={28} />}
+          <strong>{displayState === "missing" ? `${label} 尚未准备` : displayState === "offline" ? `${label} 尚未启动` : displayState === "error" ? `${label} 暂时无法打开` : `正在打开 ${label}`}</strong>
+          <p>{displayState === "missing" ? "请先完成本机组件准备，再打开完整设置。" : displayState === "offline" ? "组件已经安装。启动机器人后，完整设置会自动在这里载入。" : displayState === "error" ? panelState.message : "完整设置会显示在这个区域，切换页面不会丢失当前进度。"}</p>
+          {(displayState === "offline" || displayState === "missing") && <button className="button button-primary" type="button" onClick={onOpenRuntime}><Power size={14} />前往运行控制</button>}
+          {displayState === "error" && <button className="button button-secondary" type="button" onClick={() => void reload()}><RefreshCw size={14} />重试</button>}
         </div>
       </div>
     </section>
@@ -498,14 +507,26 @@ function Sidebar({ view, onViewChange, desktop, theme, onThemeChange, onClose }:
         </div>
       </div>
 
-      <div className="sidebar-version">Phase A · Native v0.5</div>
+      <div className="sidebar-version">Phase A · Native v0.5.3</div>
     </aside>
   );
 }
 
-function Topbar({ status, acceptance, checking, onRefresh, onMenu }: { status: StackStatus; acceptance: DesktopAcceptanceState | null; checking: boolean; onRefresh: () => void; onMenu: () => void }) {
+function Topbar({ status, acceptance, runtime, checking, onRefresh, onMenu }: { status: StackStatus; acceptance: DesktopAcceptanceState | null; runtime: DesktopRuntimeState | null; checking: boolean; onRefresh: () => void; onMenu: () => void }) {
   const ready = acceptance ? acceptance.servicesReady && acceptance.onebotConnected && acceptance.modelConfigured : status.overall === "ready";
-  const stateLabel = checking ? "正在检查" : ready ? "链路可用" : "等待组件";
+  const stateLabel = checking
+    ? "正在检查"
+    : ready
+      ? "链路可用"
+      : runtime && !runtime.nativeReady
+        ? "等待安装"
+        : runtime?.stackState === "stopped"
+          ? "等待启动"
+          : runtime?.stackState === "partial"
+            ? "部分组件异常"
+            : runtime?.stackState === "running"
+              ? "正在连接"
+              : "等待组件";
   return (
     <header className="topbar">
       <button className="icon-button mobile-menu" type="button" onClick={onMenu} aria-label="打开导航">
@@ -739,10 +760,32 @@ function ConnectionRail({ status, completed, acceptance }: { status: StackStatus
   );
 }
 
-function StatusView({ status, config, acceptance, checking, onRefresh }: { status: StackStatus; config: PublicConfig; acceptance: DesktopAcceptanceState | null; checking: boolean; onRefresh: () => void }) {
-  const serviceState = (service: ServiceProbe) => service.id === "onebot" && acceptance
-    ? acceptance.onebotConnected ? "ready" as const : "waiting" as const
-    : service.state;
+function StatusView({ status, config, acceptance, runtime, checking, onRefresh }: { status: StackStatus; config: PublicConfig; acceptance: DesktopAcceptanceState | null; runtime: DesktopRuntimeState | null; checking: boolean; onRefresh: () => void }) {
+  const servicePresentation = (service: ServiceProbe) => {
+    if (runtime && (service.id === "astrbot" || service.id === "napcat")) {
+      return getRuntimeServicePresentation(runtime?.services.find((item) => item.id === service.id), service);
+    }
+    if (service.id === "astrbot" || service.id === "napcat") {
+      return {
+        state: service.state,
+        label: serviceCopy[service.state].label,
+        detail: service.detail,
+        canOpen: service.state === "ready",
+      };
+    }
+    const state = acceptance
+      ? acceptance.onebotConnected ? "ready" as const : "waiting" as const
+      : service.state;
+    return {
+      state,
+      label: state === "ready" ? "已连接" : "等待连接",
+      detail: acceptance
+        ? acceptance.onebotConnected ? "NapCat 已建立真实 WebSocket 连接" : "6199 端口可用，等待 NapCat 连接"
+        : service.detail,
+      canOpen: false,
+    };
+  };
+  const serviceState = (service: ServiceProbe) => servicePresentation(service).state;
   const ready = status.services.filter((service) => serviceState(service) === "ready").length;
   const actualReady = acceptance ? acceptance.servicesReady && acceptance.onebotConnected && acceptance.modelConfigured : status.overall === "ready";
   return (
@@ -767,18 +810,25 @@ function StatusView({ status, config, acceptance, checking, onRefresh }: { statu
 
       <section className="service-table" aria-label="服务状态">
         <div className="service-table-head"><span>组件</span><span>状态</span><span>延迟</span><span>说明</span><span>入口</span></div>
-        {status.services.map((service) => (
-          <div className="service-row" key={service.id}>
-            <div className="service-name">
-              {service.id === "napcat" ? <Bot size={17} /> : service.id === "astrbot" ? <Server size={17} /> : <Cable size={17} />}
-              <strong>{service.label}</strong>
+        {status.services.map((service) => {
+          const presentation = servicePresentation(service);
+          return (
+            <div className="service-row" key={service.id}>
+              <div className="service-name">
+                {service.id === "napcat" ? <Bot size={17} /> : service.id === "astrbot" ? <Server size={17} /> : <Cable size={17} />}
+                <strong>{service.label}</strong>
+              </div>
+              <StatusPill state={presentation.state} detail label={presentation.label} />
+              <span className="latency">{presentation.state === "ready" && service.latencyMs !== null ? `${service.latencyMs} ms` : "—"}</span>
+              <span className="service-detail">{presentation.detail}</span>
+              {service.id === "napcat"
+                ? <ServiceOpenButton panel="napcat" href={config.napcatUrl} disabled={!presentation.canOpen}>{presentation.canOpen ? "打开" : "暂不可用"}</ServiceOpenButton>
+                : service.id === "astrbot"
+                  ? <ServiceOpenButton panel="astrbot" href={config.astrbotUrl} disabled={!presentation.canOpen}>{presentation.canOpen ? "打开" : "暂不可用"}</ServiceOpenButton>
+                  : <CopyButton value={config.onebotUrl} />}
             </div>
-            <StatusPill state={serviceState(service)} detail />
-            <span className="latency">{service.latencyMs === null ? "—" : `${service.latencyMs} ms`}</span>
-            <span className="service-detail">{service.id === "onebot" && acceptance ? acceptance.onebotConnected ? "NapCat 已建立真实 WebSocket 连接" : "6199 端口可用，等待 NapCat 连接" : service.detail}</span>
-            {service.id === "napcat" ? <ServiceOpenButton panel="napcat" href={config.napcatUrl}>打开</ServiceOpenButton> : service.id === "astrbot" ? <ServiceOpenButton panel="astrbot" href={config.astrbotUrl}>打开</ServiceOpenButton> : <CopyButton value={config.onebotUrl} />}
-          </div>
-        ))}
+          );
+        })}
         {status.services.length === 0 && <div className="empty-state">等待第一次状态探测…</div>}
       </section>
 
@@ -858,27 +908,15 @@ function RuntimeView({ runtime, status, config, checking, onRefresh }: { runtime
     if (!desktop) return;
     setFeedback(null);
     try {
-      if (!nativeReady) {
-        setActiveAction("install");
-        const prepared = await desktop.runAction("install");
-        if (!prepared.ok) {
-          setFeedback(prepared);
+      for (const action of createFirstSetupPlan(nativeReady, qqInstalled)) {
+        setActiveAction(action);
+        const result = await desktop.runAction(action);
+        if (!result.ok) {
+          setFeedback(result);
           return;
         }
-        if (prepared.code !== "QQ_REQUIRED") {
-          setFeedback(prepared);
-          return;
-        }
+        if (action === "start") setFeedback(result);
       }
-      setActiveAction("install-qq");
-      const qq = await desktop.runAction("install-qq");
-      if (!qq.ok) {
-        setFeedback(qq);
-        return;
-      }
-      setActiveAction("start");
-      const started = await desktop.runAction("start");
-      setFeedback(started);
     } catch (error) {
       setFeedback({ ok: false, message: error instanceof Error ? error.message : "首次准备失败" });
     } finally {
@@ -913,12 +951,15 @@ function RuntimeView({ runtime, status, config, checking, onRefresh }: { runtime
   const serviceState = (id: "astrbot" | "napcat") => {
     const nativeService = runtime?.services.find((service) => service.id === id);
     const probe = status.services.find((service) => service.id === id);
+    const presentation = getRuntimeServicePresentation(nativeService, probe);
     return {
       running: nativeService?.running ?? false,
       installed: nativeService?.installed ?? false,
-      detail: nativeService?.status ?? probe?.detail ?? "尚未准备",
+      detail: presentation.detail,
       version: nativeService?.version,
-      probe: probe?.state ?? "waiting" as const,
+      probe: presentation.state,
+      statusLabel: presentation.label,
+      canOpen: presentation.canOpen,
     };
   };
 
@@ -996,10 +1037,10 @@ function RuntimeView({ runtime, status, config, checking, onRefresh }: { runtime
                 <strong>组件兼容中心</strong>
                 <span>{compatibility.channel.toUpperCase()}</span>
               </div>
-              <p>{compatibility.message} · 策略 {compatibility.policyVersion} · 验证于 {compatibility.testedAt}</p>
+              <p>{compatibility.message} · 这里只检查安装版本，不代表服务已启动 · 策略 {compatibility.policyVersion} · 验证于 {compatibility.testedAt}</p>
             </div>
             <span className={`compatibility-overall overall-${compatibility.overall}`}>
-              {compatibility.overall === "compatible" ? "兼容" : compatibility.overall === "update-available" ? "可升级" : compatibility.overall === "unknown" ? "待确认" : "未就绪"}
+              {compatibility.overall === "compatible" ? "版本兼容" : compatibility.overall === "update-available" ? "可升级" : compatibility.overall === "unknown" ? "待确认" : "未就绪"}
             </span>
           </div>
 
@@ -1010,7 +1051,7 @@ function RuntimeView({ runtime, status, config, checking, onRefresh }: { runtime
                 <div><span>当前</span><code>{component.installedVersion ?? "未识别"}</code></div>
                 <div><span>稳定策略</span><code>{component.targetVersion}</code></div>
                 <span className={`compatibility-status status-${component.status}`}>
-                  {component.status === "compatible" ? "已匹配" : component.status === "update-available" ? "需调整" : component.status === "unknown" ? "未知" : "未安装"}
+                  {component.status === "compatible" ? "版本匹配" : component.status === "update-available" ? "需调整" : component.status === "unknown" ? "未知" : "未安装"}
                 </span>
               </div>
             ))}
@@ -1033,7 +1074,7 @@ function RuntimeView({ runtime, status, config, checking, onRefresh }: { runtime
                 <Download size={15} />{activeAction === "update" ? "正在升级" : "升级到稳定组合"}
               </button>
               <button type="button" disabled={!nativeReady || busy} onClick={() => void runAction("repair")}>
-                <Wrench size={15} />{activeAction === "repair" ? "正在修复" : "兼容修复"}
+                <Wrench size={15} />{activeAction === "repair" ? "正在修复" : "修复组件"}
               </button>
               <button className="rollback-action" type="button" disabled={!compatibility.snapshot.available || busy} onClick={() => void runAction("rollback")}>
                 <History size={15} />{activeAction === "rollback" ? "正在回滚" : "回滚上一版本"}
@@ -1057,9 +1098,9 @@ function RuntimeView({ runtime, status, config, checking, onRefresh }: { runtime
               <div className="component-row" key={id}>
                 <div className={`component-icon ${service.running ? "component-running" : ""}`}>{id === "napcat" ? <Bot size={19} /> : <Server size={19} />}</div>
                 <div className="component-copy"><strong>{id === "napcat" ? "NapCat" : "AstrBot"}</strong><span>{service.version ? `${service.version} · ` : ""}{id === "napcat" ? "QQ 登录与 OneBot 网络" : "模型、机器人、知识库与插件"}</span></div>
-                <StatusPill state={service.probe} detail />
+                <StatusPill state={service.probe} detail label={service.statusLabel} />
                 <span className="component-detail">{service.detail}</span>
-                <ServiceOpenButton panel={id} href={id === "napcat" ? config.napcatUrl : config.astrbotUrl} disabled={!service.running}>打开完整设置</ServiceOpenButton>
+                <ServiceOpenButton panel={id} href={id === "napcat" ? config.napcatUrl : config.astrbotUrl} disabled={!service.canOpen}>{service.canOpen ? "打开完整设置" : service.installed ? service.running ? "服务恢复后打开" : "启动后打开" : "准备后打开"}</ServiceOpenButton>
               </div>
             );
           })}
@@ -1306,13 +1347,13 @@ export function App() {
       <Sidebar view={view} onViewChange={setView} desktop={desktop} theme={theme} onThemeChange={setTheme} />
       {mobileNav && <div className="mobile-sidebar-backdrop" onClick={() => setMobileNav(false)}><div onClick={(event) => event.stopPropagation()}><Sidebar view={view} onViewChange={setView} desktop={desktop} theme={theme} onThemeChange={setTheme} onClose={() => setMobileNav(false)} /></div></div>}
       <main>
-        <Topbar status={status} acceptance={acceptance} checking={checking} onRefresh={refresh} onMenu={() => setMobileNav(true)} />
+        <Topbar status={status} acceptance={acceptance} runtime={runtime} checking={checking} onRefresh={refresh} onMenu={() => setMobileNav(true)} />
         <div className={`content-wrap ${view === "napcat" || view === "astrbot" ? "embedded-content-wrap" : ""}`}>
           {view === "runtime" && <RuntimeView runtime={runtime} status={status} config={config} checking={checking} onRefresh={refresh} />}
-          {view === "napcat" && <EmbeddedPanelWorkspace panel="napcat" runtime={runtime} suspended={mobileNav} />}
-          {view === "astrbot" && <EmbeddedPanelWorkspace panel="astrbot" runtime={runtime} suspended={mobileNav} />}
+          {view === "napcat" && <EmbeddedPanelWorkspace panel="napcat" runtime={runtime} suspended={mobileNav} onOpenRuntime={() => setView("runtime")} />}
+          {view === "astrbot" && <EmbeddedPanelWorkspace panel="astrbot" runtime={runtime} suspended={mobileNav} onOpenRuntime={() => setView("runtime")} />}
           {view === "onboarding" && <Onboarding config={config} status={status} acceptance={acceptance} checking={checking} onRefresh={refresh} completed={completed} onToggle={toggle} />}
-          {view === "status" && <StatusView status={status} config={config} acceptance={acceptance} checking={checking} onRefresh={refresh} />}
+          {view === "status" && <StatusView status={status} config={config} acceptance={acceptance} runtime={runtime} checking={checking} onRefresh={refresh} />}
           {view === "diagnostics" && <DiagnosticsView status={status} config={config} onRefresh={refresh} />}
         </div>
       </main>

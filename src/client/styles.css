@@ -333,6 +333,8 @@ main { min-width: 0; }
 .embedded-load-state { min-width: 70px; justify-content: center; padding-left: 13px; border-left: 1px solid var(--line); }
 .embedded-load-state.state-ready { color: var(--accent); }
 .embedded-load-state.state-error { color: var(--red); }
+.embedded-load-state.state-offline,
+.embedded-load-state.state-missing { color: var(--amber); }
 
 .embedded-reload {
   min-height: 32px;
@@ -349,6 +351,7 @@ main { min-width: 0; }
   transition: color .18s ease, border-color .18s ease, background-color .18s ease;
 }
 .embedded-reload:hover { color: var(--text); border-color: #405058; background: var(--surface-raised); }
+.embedded-reload:disabled { opacity: .4; cursor: not-allowed; }
 
 .embedded-panel-host {
   position: relative;
@@ -371,6 +374,8 @@ main { min-width: 0; }
 }
 .embedded-placeholder > svg { color: #536168; margin-bottom: 14px; }
 .host-error .embedded-placeholder > svg { color: var(--red); }
+.host-offline .embedded-placeholder > svg,
+.host-missing .embedded-placeholder > svg { color: var(--amber); }
 .embedded-placeholder strong { color: #c8d0d3; font-size: 14px; font-weight: 560; }
 .embedded-placeholder p { max-width: 430px; color: var(--muted); font-size: 11px; line-height: 1.7; margin: 8px 0 0; }
 .embedded-placeholder .button { margin-top: 18px; }

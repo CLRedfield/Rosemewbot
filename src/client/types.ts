@@ -29,6 +29,7 @@ export interface DesktopRuntimeService {
   state: "running" | "stopped" | "missing" | "error";
   status: string;
   version: string | null;
+  startedAt: string | null;
 }
 
 export interface DesktopInstallProgress {
