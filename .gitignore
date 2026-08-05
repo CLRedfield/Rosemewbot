@@ -1,0 +1,11 @@
+node_modules/
+dist/
+dist-server/
+.env
+data/
+*.log
+.DS_Store
+coverage/
+artifacts/
+release/
+dist-electron/

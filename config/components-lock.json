@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "policyVersion": "2026.08.05-stable.1",
+  "channel": "stable",
+  "testedAt": "2026-08-05",
+  "python": {
+    "version": "3.12"
+  },
+  "uv": {
+    "repository": "astral-sh/uv",
+    "version": "0.12.1",
+    "asset": "uv-x86_64-pc-windows-msvc.zip",
+    "sha256": "8fcb0cb46e1229065e344758980924e569bef5882ef45f46fada8fb24e06b74a"
+  },
+  "astrbot": {
+    "package": "astrbot",
+    "version": "4.27.1"
+  },
+  "napcat": {
+    "repository": "NapNeko/NapCatQQ",
+    "version": "v4.18.14",
+    "asset": "NapCat.Shell.zip",
+    "sha256": "225ff4876041878de27d79aaed88f68b7b0c40b17b284a5879f8a928429c2de4"
+  },
+  "qq": {
+    "minimumBuild": 40768,
+    "testedBuild": 44343,
+    "downloadUrl": "https://dldir1.qq.com/qqfile/qq/QQNT/40d6045a/QQ9.9.26.44343_x64.exe"
+  }
+}

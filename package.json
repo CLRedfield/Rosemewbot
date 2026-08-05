@@ -1,0 +1,91 @@
+{
+  "name": "rosemewbot",
+  "version": "0.5.0",
+  "description": "Windows-native AstrBot and NapCat QQ assistant with one-click setup.",
+  "productName": "Rosemewbot",
+  "author": "Rosemewbot",
+  "private": true,
+  "type": "module",
+  "main": "dist-electron/main.cjs",
+  "scripts": {
+    "dev": "concurrently -k \"vite\" \"tsx watch src/server/index.ts\"",
+    "build": "npm run build:web && npm run build:server",
+    "build:web": "vite build",
+    "build:server": "tsc -p tsconfig.server.json",
+    "start": "node dist-server/server/index.js",
+    "test": "vitest run",
+    "test:native-runtime": "tsx scripts/native-runtime-e2e.mts",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.desktop.json --noEmit",
+    "bootstrap": "npm run desktop:dev",
+    "build:desktop-main": "node scripts/build-desktop.mjs",
+    "desktop:dev": "npm run build:web && npm run build:desktop-main && electron .",
+    "desktop:pack": "npm run build:web && npm run build:desktop-main && electron-builder --win nsis",
+    "desktop:dir": "npm run build:web && npm run build:desktop-main && electron-builder --win dir"
+  },
+  "dependencies": {
+    "extract-zip": "^2.0.1",
+    "lucide-react": "latest",
+    "react": "latest",
+    "react-dom": "latest"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "latest",
+    "@testing-library/react": "latest",
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "@vitejs/plugin-react": "^6.0.5",
+    "concurrently": "latest",
+    "electron": "^43.2.0",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.1",
+    "jsdom": "^26.1.0",
+    "tsx": "latest",
+    "typescript": "latest",
+    "vite": "latest",
+    "vitest": "latest"
+  },
+  "build": {
+    "appId": "com.rosemewbot.desktop",
+    "productName": "Rosemewbot",
+    "asar": true,
+    "electronDist": "node_modules/electron/dist",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "config/components-lock.json",
+      "assets/icon.png",
+      "package.json"
+    ],
+    "win": {
+      "icon": "assets/icon.ico",
+      "requestedExecutionLevel": "asInvoker",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "Rosemewbot-Setup-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "installerLanguages": [
+        "zh_CN"
+      ],
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Rosemewbot",
+      "runAfterFinish": true,
+      "include": "build/installer.nsh"
+    }
+  }
+}
