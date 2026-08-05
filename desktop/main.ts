@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import {
   app,
   BrowserWindow,
+  clipboard,
   dialog,
   ipcMain,
   Menu,
@@ -458,6 +459,11 @@ function registerIpc() {
     onebotUrl: "ws://127.0.0.1:6199/ws",
     bindMode: "local" as const,
   })));
+  ipcMain.handle("desktop:copy-text", trustedHandler((value: string) => {
+    if (typeof value !== "string") throw new Error("Unsupported clipboard value");
+    clipboard.writeText(value);
+    return clipboard.readText() === value;
+  }));
   ipcMain.handle("desktop:get-status", trustedHandler(() => runtimeManager.getStatus()));
   ipcMain.handle("desktop:run-action", trustedHandler((action: NativeAction) => {
     const allowed: NativeAction[] = ["install", "install-qq", "start", "stop", "restart", "update", "repair", "rollback"];

@@ -57,6 +57,7 @@ import type {
   StackStatus,
   ViewId,
 } from "./types";
+import { copyTextToClipboard } from "./clipboard";
 import { createFirstSetupPlan, getRuntimeServicePresentation } from "./runtime-logic";
 
 const fallbackConfig: PublicConfig = {
@@ -186,18 +187,27 @@ function StatusPill({ state, detail = false, label }: { state: ServiceProbe["sta
 }
 
 function CopyButton({ value, label = "复制" }: { value: string; label?: string }) {
-  const [copied, setCopied] = useState(false);
+  const [state, setState] = useState<"idle" | "copying" | "copied" | "error">("idle");
+  const resetTimer = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+  }, []);
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(value);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1500);
+    setState("copying");
+    const copied = await copyTextToClipboard(value);
+    setState(copied ? "copied" : "error");
+    if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+    resetTimer.current = window.setTimeout(() => setState("idle"), copied ? 1500 : 2500);
   };
 
+  const feedback = state === "copied" ? "已复制" : state === "error" ? "复制失败" : label;
+
   return (
-    <button className="copy-button" type="button" onClick={handleCopy} aria-label={`${label} ${value}`}>
-      {copied ? <Check size={14} /> : <Copy size={14} />}
-      {copied ? "已复制" : label}
+    <button className={`copy-button copy-${state}`} type="button" onClick={() => void handleCopy()} disabled={state === "copying"} aria-label={feedback} aria-live="polite">
+      {state === "copied" ? <Check size={14} /> : state === "error" ? <CircleAlert size={14} /> : <Copy size={14} />}
+      {feedback}
     </button>
   );
 }
@@ -507,7 +517,7 @@ function Sidebar({ view, onViewChange, desktop, theme, onThemeChange, onClose }:
         </div>
       </div>
 
-      <div className="sidebar-version">Phase A · Native v0.5.3</div>
+      <div className="sidebar-version">Phase A · Native v0.5.4</div>
     </aside>
   );
 }
@@ -688,8 +698,8 @@ function Onboarding({ config, status, acceptance, checking, onRefresh, completed
         </div>
 
         <div className="onboarding-aside">
-          <ConnectionRail status={status} completed={completed} acceptance={acceptance} />
           <OnboardingCredentials />
+          <ConnectionRail status={status} completed={completed} acceptance={acceptance} />
         </div>
       </div>
     </div>
@@ -840,15 +850,13 @@ function StatusView({ status, config, acceptance, runtime, checking, onRefresh }
   );
 }
 
-function RuntimeView({ runtime, status, config, checking, onRefresh }: { runtime: DesktopRuntimeState | null; status: StackStatus; config: PublicConfig; checking: boolean; onRefresh: () => Promise<void> | void }) {
+function RuntimeView({ runtime, status, config, checking, onRefresh, onOpenOnboarding }: { runtime: DesktopRuntimeState | null; status: StackStatus; config: PublicConfig; checking: boolean; onRefresh: () => Promise<void> | void; onOpenOnboarding: () => void }) {
   const desktop = window.rosemewbotDesktop;
   const [activeAction, setActiveAction] = useState<DesktopAction | null>(null);
   const [feedback, setFeedback] = useState<{ ok: boolean; message: string; code?: string } | null>(null);
   const [logService, setLogService] = useState<"astrbot" | "napcat">("astrbot");
   const [logs, setLogs] = useState("选择组件后读取最近日志。\n日志中的本地凭据会自动脱敏。");
   const [logsLoading, setLogsLoading] = useState(false);
-  const [credentials, setCredentials] = useState<DesktopCredentials | null>(null);
-  const [credentialsVisible, setCredentialsVisible] = useState(false);
   const [preferences, setPreferences] = useState<DesktopPreferences>(runtime?.preferences ?? {
     launchAtLogin: false,
     startBotAtLogin: false,
@@ -936,12 +944,6 @@ function RuntimeView({ runtime, status, config, checking, onRefresh }: { runtime
     }
   };
 
-  const revealCredentials = async () => {
-    if (!desktop) return;
-    if (!credentials) setCredentials(await desktop.getCredentials());
-    setCredentialsVisible((visible) => !visible);
-  };
-
   const updatePreference = async (next: Partial<DesktopPreferences>) => {
     if (!desktop) return;
     setPreferences(await desktop.setPreferences(next));
@@ -979,6 +981,16 @@ function RuntimeView({ runtime, status, config, checking, onRefresh }: { runtime
           刷新状态
         </button>
       </section>
+
+      <button className="onboarding-cta" type="button" onClick={onOpenOnboarding}>
+        <span className="onboarding-cta-icon" aria-hidden="true"><Cable size={22} /></span>
+        <span className="onboarding-cta-copy">
+          <small>首次使用从这里开始</small>
+          <strong>打开安装向导</strong>
+          <span>跟随步骤完成 QQ 登录、OneBot 连接与模型配置</span>
+        </span>
+        <span className="onboarding-cta-action">开始配置 <ArrowRight size={17} /></span>
+      </button>
 
       {!supported && (
         <div className="desktop-alert">
@@ -1107,15 +1119,7 @@ function RuntimeView({ runtime, status, config, checking, onRefresh }: { runtime
         </section>
 
         <aside className="desktop-tools">
-          <div className="section-label"><span>本机工具</span><span>凭据与数据</span></div>
-          <button type="button" onClick={() => void revealCredentials()}><KeyRound size={17} /><span><strong>登录凭据</strong><small>{credentialsVisible ? "点击隐藏" : "查看本机生成的密码"}</small></span>{credentialsVisible ? <EyeOff size={16} /> : <Eye size={16} />}</button>
-          {credentialsVisible && credentials && (
-            <div className="credential-list">
-              <div><span>AstrBot 用户名</span><code>{credentials.astrbotUsername}</code><CopyButton value={credentials.astrbotUsername} /></div>
-              <div><span>AstrBot 密码</span><code>{credentials.astrbotPassword}</code><CopyButton value={credentials.astrbotPassword} /></div>
-              <div><span>NapCat Token</span><code>{credentials.napcatToken}</code><CopyButton value={credentials.napcatToken} /></div>
-            </div>
-          )}
+          <div className="section-label"><span>本机工具</span><span>数据与偏好</span></div>
           <button type="button" onClick={() => void desktop?.openDataFolder()}><FolderOpen size={17} /><span><strong>数据目录</strong><small>{runtime?.runtimeDir ?? "初始化中"}</small></span><ExternalLink size={16} /></button>
           <div className="preference-group">
             <div className="section-label"><span>后台运行</span><span>托盘与自动恢复</span></div>
@@ -1349,7 +1353,7 @@ export function App() {
       <main>
         <Topbar status={status} acceptance={acceptance} runtime={runtime} checking={checking} onRefresh={refresh} onMenu={() => setMobileNav(true)} />
         <div className={`content-wrap ${view === "napcat" || view === "astrbot" ? "embedded-content-wrap" : ""}`}>
-          {view === "runtime" && <RuntimeView runtime={runtime} status={status} config={config} checking={checking} onRefresh={refresh} />}
+          {view === "runtime" && <RuntimeView runtime={runtime} status={status} config={config} checking={checking} onRefresh={refresh} onOpenOnboarding={() => setView("onboarding")} />}
           {view === "napcat" && <EmbeddedPanelWorkspace panel="napcat" runtime={runtime} suspended={mobileNav} onOpenRuntime={() => setView("runtime")} />}
           {view === "astrbot" && <EmbeddedPanelWorkspace panel="astrbot" runtime={runtime} suspended={mobileNav} onOpenRuntime={() => setView("runtime")} />}
           {view === "onboarding" && <Onboarding config={config} status={status} acceptance={acceptance} checking={checking} onRefresh={refresh} completed={completed} onToggle={toggle} />}

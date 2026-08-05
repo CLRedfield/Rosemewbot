@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld("rosemewbotDesktop", {
   runDiagnostics: () => ipcRenderer.invoke("desktop:run-diagnostics"),
   getLogs: (service: "astrbot" | "napcat") => ipcRenderer.invoke("desktop:get-logs", service),
   getCredentials: () => ipcRenderer.invoke("desktop:get-credentials"),
+  copyText: (value: string) => ipcRenderer.invoke("desktop:copy-text", value),
   openPanel: (panel: PanelId) => ipcRenderer.invoke("desktop:open-panel", panel),
   showPanel: (panel: PanelId, bounds: PanelBounds) => ipcRenderer.invoke("desktop:show-panel", panel, bounds),
   setPanelBounds: (panel: PanelId, bounds: PanelBounds) => ipcRenderer.invoke("desktop:set-panel-bounds", panel, bounds),

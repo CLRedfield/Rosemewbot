@@ -22,6 +22,7 @@ interface RosemewbotDesktopApi {
   runDiagnostics(): Promise<DesktopDiagnosticReport>;
   getLogs(service: "astrbot" | "napcat"): Promise<string>;
   getCredentials(): Promise<DesktopCredentials>;
+  copyText(value: string): Promise<boolean>;
   openPanel(panel: EmbeddedPanelId): Promise<{ ok: boolean }>;
   showPanel(panel: EmbeddedPanelId, bounds: EmbeddedPanelBounds): Promise<{ ok: boolean }>;
   setPanelBounds(panel: EmbeddedPanelId, bounds: EmbeddedPanelBounds): Promise<{ ok: boolean }>;

@@ -27,7 +27,7 @@ export async function probeHttp(
       method: "GET",
       redirect: "manual",
       signal: controller.signal,
-      headers: { "User-Agent": "Rosemewbot-Console/0.5.3" },
+      headers: { "User-Agent": "Rosemewbot-Console/0.5.4" },
     });
     return {
       id,
