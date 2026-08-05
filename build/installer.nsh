@@ -2,16 +2,9 @@
 !include LogicLib.nsh
 !include MUI2.nsh
 
-; Keep the assisted installer per-user and skip the unnecessary
-; "all users / only me" page.
-!macro customInstallMode
-  StrCpy $isForceCurrentInstall "1"
-!macroend
-
 !ifndef BUILD_UNINSTALLER
 
-; v0.4 defaults to the same direct C-drive layout used by the pilot machine.
-; Users can still choose another parent directory on the assisted page below.
+; Set the direct C-drive layout after electron-builder initializes install mode.
 !macro customInit
   StrCpy $INSTDIR "C:\Rosemewbot"
 !macroend
@@ -29,7 +22,10 @@ Var RecommendedInstallDir
 !macroend
 
 Function InstallLocationPageCreate
-  StrCpy $RecommendedInstallDir $INSTDIR
+  ; The install-mode initialization may assign a Program Files/AppData path.
+  ; Reset both the recommended path and the editable custom path here, after it.
+  StrCpy $RecommendedInstallDir "C:\Rosemewbot"
+  StrCpy $INSTDIR $RecommendedInstallDir
   !insertmacro MUI_HEADER_TEXT "选择安装位置" "默认安装最省心，也可以把程序和机器人组件放到其他磁盘。"
 
   nsDialogs::Create 1018
@@ -78,7 +74,7 @@ Function InstallLocationModeChanged
 FunctionEnd
 
 Function BrowseInstallLocation
-  nsDialogs::SelectFolderDialog "选择程序和机器人数据的父目录" "$INSTDIR"
+  nsDialogs::SelectFolderDialog "选择程序和机器人数据的父目录" "$RecommendedInstallDir"
   Pop $0
   ${If} $0 != error
     ${NSD_SetText} $InstallLocationText "$0\${APP_FILENAME}"

@@ -1,6 +1,6 @@
 {
   "name": "rosemewbot",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Windows-native AstrBot and NapCat QQ assistant with one-click setup.",
   "productName": "Rosemewbot",
   "author": "Rosemewbot",
@@ -76,8 +76,9 @@
     },
     "nsis": {
       "oneClick": false,
-      "perMachine": false,
+      "perMachine": true,
       "allowElevation": true,
+      "allowToChangeInstallationDirectory": false,
       "installerLanguages": [
         "zh_CN"
       ],

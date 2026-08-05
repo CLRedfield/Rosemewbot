@@ -9,12 +9,12 @@
 构建产物：
 
 ```text
-release/Rosemewbot-Setup-0.5.0-x64.exe
+release/Rosemewbot-Setup-0.5.1-x64.exe
 ```
 
 用户流程只有三步：
 
-1. 双击安装包，在“安装位置”页面选择默认位置或点击“浏览”选择其他磁盘/文件夹。
+1. 双击安装包并允许管理员权限，在“安装位置”页面选择默认位置或点击“浏览”选择其他磁盘/文件夹。
 2. 第一次打开后点击“一键完成首次准备”；软件自动准备 AstrBot、NapCat 和独立 Python 运行环境，并在需要时打开 QQ 官方安装器。
 3. 登录机器人 QQ，点击“启动机器人”，再在 AstrBot 中添加模型。
 
@@ -27,7 +27,7 @@ C:\Rosemewbot\
 C:\Rosemewbot-data\
 ```
 
-安装器默认直接使用 C 盘根目录，并保留“浏览”入口。选择自定义目录后，程序目录与 `-data` 数据目录会放在同一个所选父目录下。例如最终程序目录为 `D:\Bots\Rosemewbot`，组件和数据位于 `D:\Bots\Rosemewbot-data`。AstrBot、NapCat、独立 Python、缓存、配置和日志都跟随该位置；腾讯 QQ 仍由官方 QQ 安装器管理。
+安装器会申请管理员权限，默认路径和自定义路径输入框的初始值均为 `C:\Rosemewbot`。选择其他父目录后，程序目录与 `-data` 数据目录会放在同一个所选位置旁。例如最终程序目录为 `D:\Bots\Rosemewbot`，组件和数据位于 `D:\Bots\Rosemewbot-data`。AstrBot、NapCat、独立 Python、缓存、配置和日志都跟随该位置；腾讯 QQ 仍由官方 QQ 安装器管理。
 
 当前本地构建尚未配置商业代码签名证书，Windows SmartScreen 可能显示“未知发布者”；正式对外分发前应使用可信 Windows 代码签名证书签署安装包。
 

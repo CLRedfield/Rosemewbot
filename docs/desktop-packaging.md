@@ -23,7 +23,7 @@ Windows QQ（腾讯官方安装）
 
 ## 默认安装与自定义位置
 
-安装器使用 NSIS 引导模式。用户在“安装位置”页面直接继续即采用默认位置，也可以点击“浏览”选择 D 盘或其他目录。
+安装器使用需要管理员权限的 NSIS 引导模式。内置的 AppData 目录页已禁用；自定义安装位置页会在安装模式初始化完成后再次把默认路径和输入框初始值设为 `C:\Rosemewbot`。用户可以直接继续，也可以点击“浏览”选择其他目录。
 
 ```text
 默认：
@@ -132,7 +132,7 @@ npm run desktop:pack
 构建产物：
 
 ```text
-release/Rosemewbot-Setup-0.5.0-x64.exe
+release/Rosemewbot-Setup-0.5.1-x64.exe
 release/win-unpacked/Rosemewbot.exe
 ```
 
