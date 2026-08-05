@@ -337,6 +337,91 @@ function PanelTextLink({ panel, href }: { panel: "astrbot" | "napcat"; href: str
   return <button className="text-link" type="button" onClick={() => void window.rosemewbotDesktop?.openPanel(panel)}>{href}</button>;
 }
 
+export function EmbeddedCredentials({ panel }: { panel: EmbeddedPanelId }) {
+  const desktop = window.rosemewbotDesktop;
+  const [credentials, setCredentials] = useState<DesktopCredentials | null>(null);
+  const [visible, setVisible] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const label = panel === "napcat" ? "NapCat" : "AstrBot";
+  const credentialId = `embedded-${panel}-credentials`;
+
+  if (!desktop) return null;
+
+  const toggle = async () => {
+    if (visible) {
+      setVisible(false);
+      return;
+    }
+
+    if (credentials) {
+      setVisible(true);
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    try {
+      setCredentials(await desktop.getCredentials());
+      setVisible(true);
+    } catch {
+      setError("凭据读取失败，请稍后重试");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <section className={`embedded-credentials ${visible ? "credentials-visible" : ""}`} aria-label={`${label} 登录凭据`}>
+      <div className="embedded-credential-heading">
+        <KeyRound size={15} aria-hidden="true" />
+        <span>
+          <strong>{panel === "napcat" ? "登录 Token" : "登录用户名与密码"}</strong>
+          <small>{visible ? "仅在本机临时显示" : `登录 ${label} 后台时使用`}</small>
+        </span>
+      </div>
+      {visible && credentials && (
+        <div className="embedded-credential-values" id={credentialId}>
+          {panel === "astrbot" && (
+            <div className="embedded-credential-value">
+              <span>用户名</span>
+              <code>{credentials.astrbotUsername}</code>
+              <CopyButton value={credentials.astrbotUsername} />
+            </div>
+          )}
+          {panel === "astrbot" && (
+            <div className="embedded-credential-value">
+              <span>密码</span>
+              <code>{credentials.astrbotPassword}</code>
+              <CopyButton value={credentials.astrbotPassword} />
+            </div>
+          )}
+          {panel === "napcat" && (
+            <div className="embedded-credential-value">
+              <span>Token</span>
+              <code>{credentials.napcatToken}</code>
+              <CopyButton value={credentials.napcatToken} />
+            </div>
+          )}
+        </div>
+      )}
+      {error && <span className="embedded-credential-error" role="alert">{error}</span>}
+      <button
+        className="embedded-credential-toggle"
+        type="button"
+        aria-controls={credentialId}
+        aria-expanded={visible}
+        aria-label={`${visible ? "隐藏" : "显示"} ${label} 登录凭据`}
+        disabled={loading}
+        onClick={() => void toggle()}
+      >
+        {loading ? <RefreshCw size={14} className="spin" /> : visible ? <EyeOff size={14} /> : <Eye size={14} />}
+        {loading ? "读取中" : visible ? "隐藏" : "显示"}
+      </button>
+    </section>
+  );
+}
+
 function boundsForElement(element: HTMLElement): EmbeddedPanelBounds {
   const rect = element.getBoundingClientRect();
   return {
@@ -457,6 +542,7 @@ function EmbeddedPanelWorkspace({ panel, runtime, suspended = false, onOpenRunti
           {isLoading ? "载入中" : isError ? "重试" : "重新载入"}
         </button>
       </header>
+      <EmbeddedCredentials panel={panel} />
       <div className={`embedded-panel-host host-${displayState}`} ref={hostRef}>
         <div className="embedded-placeholder">
           {displayState === "error" ? <CircleAlert size={28} /> : displayState === "offline" || displayState === "missing" ? <Power size={28} /> : panel === "napcat" ? <Bot size={28} /> : <Server size={28} />}

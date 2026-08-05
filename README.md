@@ -9,7 +9,7 @@
 构建产物：
 
 ```text
-release/Rosemewbot-Setup-0.5.5-x64.exe
+release/Rosemewbot-Setup-0.5.6-x64.exe
 ```
 
 用户流程只有三步：
@@ -41,7 +41,7 @@ C:\Rosemewbot-data\
 - Windows 系统托盘、开机启动、登录后自动启动机器人和掉线自动恢复。
 - 智能诊断组件、QQ、端口、模型与磁盘空间，并提供对应处理入口。
 - 下载/安装进度、运行状态、最近日志和敏感凭据脱敏。
-- 运行控制与接入向导均可查看、复制当前 AstrBot 登录凭据和 NapCat Token。
+- 运行控制、接入向导及两个内嵌后台顶部均可按需显示、复制对应的 AstrBot 登录凭据或 NapCat Token。
 - 跟随 Windows、亮色、暗色三档主题；默认跟随 Windows。
 - 独立设置页可调整 100% / 115% / 130% 界面字号，默认使用更易读的 115%。
 - 在设置中检查 Rosemewbot 正式版更新，并安全跳转到 GitHub 发布页下载。
