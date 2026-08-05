@@ -30,6 +30,13 @@ import {
   type NativePreferences,
   type NativeServiceId,
 } from "./native-runtime.js";
+import {
+  APP_RELEASE_API,
+  APP_RELEASE_PAGE,
+  createAppUpdateError,
+  createAppUpdateResult,
+  type GitHubAppRelease,
+} from "./app-update.js";
 import { buildFullUninstallPlan } from "./uninstall.js";
 
 type PanelId = "astrbot" | "napcat";
@@ -56,8 +63,10 @@ const captureTheme = captureThemeArgument?.split("=")[1];
 const captureViewArgument = process.argv.find((argument) => argument.startsWith("--capture-view="));
 const captureView = captureViewArgument?.split("=")[1];
 const backgroundLaunch = process.argv.includes("--background");
+const PANEL_LOAD_TIMEOUT_MS = 15_000;
 const panelViews = new Map<PanelId, WebContentsView>();
 const panelStates = new Map<PanelId, PanelState>();
+const panelLoadTimers = new Map<PanelId, NodeJS.Timeout>();
 let mainWindow: BrowserWindow | null = null;
 let activePanel: PanelId | null = null;
 let runtimeManager: NativeRuntimeManager;
@@ -109,6 +118,33 @@ function syncLoginItemSettings(preferences: NativePreferences) {
     path: process.execPath,
     args: ["--background"],
   });
+}
+
+async function checkApplicationUpdate() {
+  const currentVersion = app.getVersion();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const response = await net.fetch(APP_RELEASE_API, {
+      signal: controller.signal,
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": `Rosemewbot/${currentVersion}`,
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+    });
+    if (!response.ok) throw new Error(`发布服务返回 ${response.status}`);
+    const release = await response.json() as Partial<GitHubAppRelease>;
+    if (typeof release.tag_name !== "string") throw new Error("发布版本信息无效");
+    return createAppUpdateResult(currentVersion, release as GitHubAppRelease);
+  } catch (error) {
+    const detail = controller.signal.aborted
+      ? "网络请求超时"
+      : error instanceof Error ? error.message : "网络连接失败";
+    return createAppUpdateError(currentVersion, detail);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function requestFullUninstall() {
@@ -291,6 +327,52 @@ function sendPanelState(state: PanelState) {
   }
 }
 
+function clearPanelLoadTimer(panel: PanelId) {
+  const timer = panelLoadTimers.get(panel);
+  if (timer) clearTimeout(timer);
+  panelLoadTimers.delete(panel);
+}
+
+function beginPanelLoad(panel: PanelId, panelView: WebContentsView, message?: string) {
+  clearPanelLoadTimer(panel);
+  sendPanelState(panelMessage(panel, "loading", message));
+  const label = panel === "astrbot" ? "AstrBot" : "NapCat";
+  const timer = setTimeout(() => {
+    panelLoadTimers.delete(panel);
+    if (panelStates.get(panel)?.state !== "loading" || panelView.webContents.isDestroyed()) return;
+    panelView.webContents.stop();
+    panelView.setVisible(false);
+    sendPanelState(panelMessage(
+      panel,
+      "error",
+      `${label} 设置页在 ${PANEL_LOAD_TIMEOUT_MS / 1000} 秒内没有响应。服务可能仍在启动，请稍后重试；若持续失败，请前往运行控制查看状态。`,
+    ));
+  }, PANEL_LOAD_TIMEOUT_MS);
+  panelLoadTimers.set(panel, timer);
+}
+
+function finishPanelLoad(panel: PanelId, panelView: WebContentsView) {
+  clearPanelLoadTimer(panel);
+  sendPanelState(panelMessage(panel, "ready"));
+  if (activePanel === panel) panelView.setVisible(true);
+}
+
+function failPanelLoad(panel: PanelId, panelView: WebContentsView, detail: string) {
+  clearPanelLoadTimer(panel);
+  panelView.setVisible(false);
+  sendPanelState(panelMessage(panel, "error", detail));
+}
+
+function observePanelNavigation(panel: PanelId, panelView: WebContentsView, navigation: Promise<void>) {
+  void navigation.catch((error: unknown) => {
+    // did-fail-load normally provides the clearer Chromium error. This is a fallback
+    // for failures that reject loadURL without a corresponding main-frame event.
+    if (panelStates.get(panel)?.state !== "loading") return;
+    const detail = error instanceof Error ? error.message : `${panel === "astrbot" ? "AstrBot" : "NapCat"} 设置暂时无法访问`;
+    failPanelLoad(panel, panelView, detail);
+  });
+}
+
 function normalizePanelBounds(bounds: PanelBounds) {
   if (!mainWindow || mainWindow.isDestroyed()) throw new Error("Main window is unavailable");
   if (!bounds || typeof bounds !== "object") throw new Error("Invalid panel bounds");
@@ -365,21 +447,19 @@ function createPanelView(panel: PanelId) {
       event.preventDefault();
     }
   });
-  panelView.webContents.on("did-start-loading", () => {
-    sendPanelState(panelMessage(panel, "loading"));
+  panelView.webContents.on("did-start-navigation", (details) => {
+    if (!details.isMainFrame || details.isSameDocument) return;
+    beginPanelLoad(panel, panelView);
   });
   panelView.webContents.on("did-finish-load", () => {
-    sendPanelState(panelMessage(panel, "ready"));
-    if (activePanel === panel) panelView.setVisible(true);
+    finishPanelLoad(panel, panelView);
   });
   panelView.webContents.on("did-fail-load", (_event, errorCode, errorDescription, _url, isMainFrame) => {
     if (!isMainFrame || errorCode === -3) return;
-    panelView.setVisible(false);
-    sendPanelState(panelMessage(panel, "error", `${errorDescription}（${errorCode}）`));
+    failPanelLoad(panel, panelView, `${errorDescription}（${errorCode}）`);
   });
   panelView.webContents.on("render-process-gone", () => {
-    panelView.setVisible(false);
-    sendPanelState(panelMessage(panel, "error", `${panel === "astrbot" ? "AstrBot" : "NapCat"} 设置页面意外退出`));
+    failPanelLoad(panel, panelView, `${panel === "astrbot" ? "AstrBot" : "NapCat"} 设置页面意外退出`);
   });
   return panelView;
 }
@@ -398,7 +478,7 @@ async function showEmbeddedPanel(panel: PanelId, bounds: PanelBounds) {
   if (panelView.webContents.getURL()) {
     panelView.setVisible(currentState.state !== "error");
   } else {
-    await panelView.webContents.loadURL(await panelTarget(panel));
+    observePanelNavigation(panel, panelView, panelView.webContents.loadURL(await panelTarget(panel)));
   }
 }
 
@@ -418,9 +498,10 @@ function hideEmbeddedPanel(panel?: PanelId) {
 async function reloadEmbeddedPanel(panel: PanelId) {
   assertPanel(panel);
   const panelView = panelViews.get(panel);
-  sendPanelState(panelMessage(panel, "loading"));
-  if (panelView?.webContents.getURL()) panelView.webContents.reloadIgnoringCache();
-  else if (panelView) await panelView.webContents.loadURL(await panelTarget(panel));
+  if (!panelView) return;
+  beginPanelLoad(panel, panelView, `正在重新载入 ${panel === "astrbot" ? "AstrBot" : "NapCat"} 设置`);
+  if (panelView.webContents.getURL()) panelView.webContents.reloadIgnoringCache();
+  else observePanelNavigation(panel, panelView, panelView.webContents.loadURL(await panelTarget(panel)));
 }
 
 function requestEmbeddedPanel(panel: PanelId) {
@@ -433,6 +514,7 @@ function requestEmbeddedPanel(panel: PanelId) {
 
 function disposePanelViews() {
   activePanel = null;
+  for (const panel of panelLoadTimers.keys()) clearPanelLoadTimer(panel);
   for (const panelView of panelViews.values()) {
     if (!panelView.webContents.isDestroyed()) panelView.webContents.close();
   }
@@ -465,6 +547,12 @@ function registerIpc() {
     return clipboard.readText() === value;
   }));
   ipcMain.handle("desktop:get-status", trustedHandler(() => runtimeManager.getStatus()));
+  ipcMain.handle("desktop:get-app-version", trustedHandler(() => app.getVersion()));
+  ipcMain.handle("desktop:check-app-update", trustedHandler(() => checkApplicationUpdate()));
+  ipcMain.handle("desktop:open-app-update-page", trustedHandler(async () => {
+    await shell.openExternal(APP_RELEASE_PAGE);
+    return { ok: true };
+  }));
   ipcMain.handle("desktop:run-action", trustedHandler((action: NativeAction) => {
     const allowed: NativeAction[] = ["install", "install-qq", "start", "stop", "restart", "update", "repair", "rollback"];
     if (!allowed.includes(action)) throw new Error("Unsupported action");
@@ -577,8 +665,9 @@ async function createMainWindow() {
     const result = await mainWindow.webContents.executeJavaScript(`Promise.all([
       window.rosemewbotDesktop?.getStatus(),
       window.rosemewbotDesktop?.getPreferences(),
-      window.rosemewbotDesktop?.runDiagnostics()
-    ]).then(([status, preferences, diagnostics]) => ({ status, preferences, diagnostics }))`);
+      window.rosemewbotDesktop?.runDiagnostics(),
+      window.rosemewbotDesktop?.getAppVersion()
+    ]).then(([status, preferences, diagnostics, appVersion]) => ({ status, preferences, diagnostics, appVersion }))`);
     console.log(`DESKTOP_SMOKE_OK ${JSON.stringify({
       bridge: Boolean(result),
       stackState: result?.status?.runtime?.stackState ?? "unknown",
@@ -586,6 +675,7 @@ async function createMainWindow() {
       qqInstalled: result?.status?.runtime?.qqInstalled ?? false,
       autoRecovery: result?.preferences?.autoRecovery ?? false,
       diagnosticItems: result?.diagnostics?.items?.length ?? 0,
+      appVersion: result?.appVersion ?? "unknown",
     })}`);
     app.exit(result ? 0 : 1);
   }
@@ -594,29 +684,37 @@ async function createMainWindow() {
     await mainWindow.webContents.insertCSS("*, *::before, *::after { transition: none !important; animation: none !important; }");
     if (captureTheme === "light" || captureTheme === "dark" || captureTheme === "system") {
       const title = captureTheme === "system" ? "Windows" : captureTheme === "light" ? "亮色" : "暗色";
+      const openedSettings = await mainWindow.webContents.executeJavaScript(`(() => {
+        const button = document.querySelector('.sidebar nav button[data-view="settings"]');
+        button?.click();
+        return Boolean(button);
+      })()`);
+      if (!openedSettings) throw new Error("Capture settings option not found");
+      await new Promise((resolve) => setTimeout(resolve, 50));
       const selected = await mainWindow.webContents.executeJavaScript(`(() => {
         const button = [...document.querySelectorAll('.theme-options button')]
-          .find((item) => item.getAttribute('title')?.includes(${JSON.stringify(title)}));
+          .find((item) => item.textContent?.includes(${JSON.stringify(title === "Windows" ? "系统" : title)}));
         button?.click();
         return Boolean(button);
       })()`);
       if (!selected) throw new Error(`Capture theme option not found: ${captureTheme}`);
     }
-    if (["runtime", "napcat", "astrbot", "onboarding", "status", "diagnostics"].includes(captureView ?? "")) {
-      const labels: Record<string, string> = { runtime: "运行控制", napcat: "NapCat 设置", astrbot: "AstrBot 设置", onboarding: "接入向导", status: "运行状态", diagnostics: "故障诊断" };
+    const requestedCaptureView = captureView ?? (captureTheme ? "runtime" : null);
+    if (["runtime", "napcat", "astrbot", "onboarding", "status", "diagnostics", "settings"].includes(requestedCaptureView ?? "")) {
       const selected = await mainWindow.webContents.executeJavaScript(`(() => {
-        const button = [...document.querySelectorAll('.sidebar nav button')]
-          .find((item) => item.textContent?.includes(${JSON.stringify(labels[captureView!])}));
+        const button = document.querySelector(${JSON.stringify(`.sidebar nav button[data-view="${requestedCaptureView}"]`)});
         button?.click();
         return Boolean(button);
       })()`);
-      if (!selected) throw new Error(`Capture view not found: ${captureView}`);
+      if (!selected) throw new Error(`Capture view not found: ${requestedCaptureView}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 300));
     const capturedThemeState = await mainWindow.webContents.executeJavaScript(`({
       mode: document.documentElement.dataset.themeMode,
       resolved: document.documentElement.dataset.theme,
-      selected: document.querySelector('.theme-options button[aria-pressed="true"]')?.textContent?.trim()
+      selected: document.querySelector('.theme-options button[aria-pressed="true"]')?.textContent?.trim(),
+      fontScale: document.documentElement.dataset.fontScale,
+      sampleFontSize: getComputedStyle(document.querySelector('.setting-copy strong') ?? document.body).fontSize
     })`);
     console.log(`DESKTOP_CAPTURE_THEME ${JSON.stringify(capturedThemeState)}`);
     const image = await mainWindow.webContents.capturePage();

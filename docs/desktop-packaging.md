@@ -52,7 +52,7 @@ native-runtime/
 └── secrets.json      本机生成的后台凭据
 ```
 
-Windows 常规卸载只删除程序目录，不删除相邻的 `-data` 目录。“智能诊断”页的一键完全卸载会先显示原生危险确认框，确认后停止受控组件、关闭开机启动，再调用已安装目录中的卸载器；专用参数会额外删除相邻数据目录、旧 AppData 数据和旧品牌残留。腾讯 QQ 本身不会被卸载。更新和修复仍会保留 `astrbot/data` 与 `napcat/config`；首次运行新版时，如果发现旧版 `%APPDATA%\agent-space-qq-bridge\native-runtime`，会自动迁移到新位置。
+Windows 常规卸载只删除程序目录，不删除相邻的 `-data` 目录。“设置”页危险操作中的一键完全卸载会先显示原生危险确认框，确认后停止受控组件、关闭开机启动，再调用已安装目录中的卸载器；专用参数会额外删除相邻数据目录、旧 AppData 数据和旧品牌残留。腾讯 QQ 本身不会被卸载。更新和修复仍会保留 `astrbot/data` 与 `napcat/config`；首次运行新版时，如果发现旧版 `%APPDATA%\agent-space-qq-bridge\native-runtime`，会自动迁移到新位置。
 
 ## 快捷操作
 
@@ -66,6 +66,7 @@ Windows 常规卸载只删除程序目录，不删除相邻的 `-data` 目录。
 | 修复组件 | 重新安装当前稳定策略锁定版本并修复 Rosemewbot 连接契约 | 保留配置与登录 |
 | 回滚组件 | 恢复最近一次升级前的组件程序与配置快照 | 保留当前用户数据边界 |
 | 打开完整设置 | 在主窗口内切换到隔离的本机后台工作区 | 不自动修改设置 |
+| 检查应用更新 | 查询 Rosemewbot 最新正式版；有新版时打开受信任的 GitHub 发布页 | 不自动修改或删除本机数据 |
 | 一键完全卸载 | 二次确认后停止组件并启动专用静默卸载流程 | 永久删除 Rosemewbot 程序与全部本地数据，不删除腾讯 QQ |
 
 关闭主窗口会隐藏到系统托盘，不会停止机器人。托盘提供打开控制台、启动、停止、重启、开机启动和掉线恢复开关；“退出并停止机器人”会先安全停止受控组件，再退出应用。
@@ -133,7 +134,7 @@ npm run desktop:pack
 构建产物：
 
 ```text
-release/Rosemewbot-Setup-0.5.4-x64.exe
+release/Rosemewbot-Setup-0.5.5-x64.exe
 release/win-unpacked/Rosemewbot.exe
 ```
 
@@ -144,7 +145,7 @@ release/win-unpacked/Rosemewbot.exe
 - `npm run typecheck`：Web、服务端和 Electron 主进程类型检查。
 - `npm test`：服务探测、QQ 安装路径解析和 NapCat 本机网络配置测试。
 - 解包程序 `--smoke-test`：验证自定义协议、安全桥、状态 IPC 和本机运行层初始化。
-- `--capture-ui --capture-theme=light|dark|system`：检查三种主题下的桌面运行控制页。
+- `--capture-ui --capture-theme=light|dark|system --capture-view=runtime|settings|...`：检查三种主题下的桌面运行控制页、设置页和其他主要视图。
 - 安装包构建：验证 NSIS 默认/自定义目录页面、桌面/开始菜单快捷方式、常规卸载保留数据，以及专用完全卸载参数清理相邻数据目录。
 - 真实链路验收仍需用户完成 QQ 扫码，并在 AstrBot 配好模型后发送一条测试消息。
 

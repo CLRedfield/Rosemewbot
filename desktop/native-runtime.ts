@@ -216,7 +216,7 @@ export const COMPONENT_POLICY = componentLock as {
 };
 const githubHeaders = {
   Accept: "application/vnd.github+json",
-  "User-Agent": "Rosemewbot-Native/0.5.4",
+  "User-Agent": "Rosemewbot-Native/0.5.5",
   "X-GitHub-Api-Version": "2022-11-28",
 };
 const managedNapCatConnectionName = "Rosemewbot · AstrBot";

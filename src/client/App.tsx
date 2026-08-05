@@ -43,6 +43,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   DesktopAcceptanceState,
   DesktopAction,
+  DesktopAppUpdateResult,
   DesktopCredentials,
   DesktopDiagnosticAction,
   DesktopDiagnosticReport,
@@ -88,12 +89,19 @@ const emptyAcceptance: DesktopAcceptanceState = {
 const manualStepIds = ["qq-login", "model", "test"] as const;
 type ManualStepId = (typeof manualStepIds)[number];
 type ThemeMode = "system" | "light" | "dark";
+type FontScale = "standard" | "comfortable" | "large";
 
 const themeStorageKey = "rosemewbot-theme";
 const legacyThemeStorageKey = "agent-space-theme";
+const fontScaleStorageKey = "rosemewbot-font-scale";
 const onboardingStorageKey = "rosemewbot-onboarding";
 const legacyOnboardingStorageKey = "agent-space-onboarding";
 const themeModes: ThemeMode[] = ["system", "light", "dark"];
+const fontScales: Record<FontScale, number> = {
+  standard: 1,
+  comfortable: 1.15,
+  large: 1.3,
+};
 
 function readThemePreference(): ThemeMode {
   try {
@@ -121,6 +129,22 @@ function applyTheme(mode: ThemeMode) {
 
 applyTheme(readThemePreference());
 
+function readFontScalePreference(): FontScale {
+  try {
+    const stored = localStorage.getItem(fontScaleStorageKey) as FontScale | null;
+    return stored && stored in fontScales ? stored : "comfortable";
+  } catch {
+    return "comfortable";
+  }
+}
+
+function applyFontScale(scale: FontScale) {
+  document.documentElement.dataset.fontScale = scale;
+  document.documentElement.style.setProperty("--font-scale", String(fontScales[scale]));
+}
+
+applyFontScale(readFontScalePreference());
+
 function useThemePreference() {
   const [theme, setTheme] = useState<ThemeMode>(readThemePreference);
 
@@ -142,6 +166,21 @@ function useThemePreference() {
   }, [theme]);
 
   return { theme, setTheme };
+}
+
+function useFontScalePreference() {
+  const [fontScale, setFontScale] = useState<FontScale>(readFontScalePreference);
+
+  useEffect(() => {
+    applyFontScale(fontScale);
+    try {
+      localStorage.setItem(fontScaleStorageKey, fontScale);
+    } catch {
+      // The selected size still applies for this session if storage is unavailable.
+    }
+  }, [fontScale]);
+
+  return { fontScale, setFontScale };
 }
 
 const serviceCopy: Record<
@@ -387,6 +426,10 @@ function EmbeddedPanelWorkspace({ panel, runtime, suspended = false, onOpenRunti
   };
 
   const displayState = !service?.installed ? "missing" : !running ? "offline" : panelState.state;
+  const isLoading = displayState === "loading";
+  const isError = displayState === "error";
+  const loadStateLabel = isLoading ? "载入中" : displayState === "ready" ? "已连接" : displayState === "offline" ? "等待启动" : displayState === "missing" ? "等待准备" : "载入失败";
+  const loadStateDetail = displayState === "offline" ? `${label} 服务尚未启动` : displayState === "missing" ? `${label} 组件尚未准备` : panelState.message;
 
   return (
     <section className="embedded-workspace view-enter" aria-label={`${label} 内嵌设置`}>
@@ -402,16 +445,16 @@ function EmbeddedPanelWorkspace({ panel, runtime, suspended = false, onOpenRunti
           <span />
           {running ? "服务运行中" : service?.installed ? "服务未启动" : "组件未准备"}
         </div>
-        <div className={`embedded-load-state state-${displayState}`} role="status" aria-live="polite">
+        <div className={`embedded-load-state state-${displayState}`} role="status" aria-live="polite" title={loadStateDetail}>
           {displayState === "loading" && <RefreshCw size={13} className="spin" />}
           {displayState === "ready" && <Check size={13} />}
           {displayState === "error" && <CircleAlert size={13} />}
           {(displayState === "offline" || displayState === "missing") && <Power size={13} />}
-          <span>{displayState === "loading" ? "载入中" : displayState === "ready" ? "已连接" : displayState === "offline" ? "等待启动" : displayState === "missing" ? "等待准备" : "连接失败"}</span>
+          <span>{loadStateLabel}</span>
         </div>
-        <button className="embedded-reload" type="button" disabled={!running} onClick={() => void reload()} title={running ? `重新载入 ${label}` : "请先启动机器人"}>
+        <button className="embedded-reload" type="button" disabled={!running || isLoading} onClick={() => void reload()} title={!running ? "请先启动机器人" : isLoading ? `${label} 正在载入` : isError ? `重试载入 ${label}` : `重新载入 ${label}`}>
           <RefreshCw size={15} />
-          重新载入
+          {isLoading ? "载入中" : isError ? "重试" : "重新载入"}
         </button>
       </header>
       <div className={`embedded-panel-host host-${displayState}`} ref={hostRef}>
@@ -420,14 +463,19 @@ function EmbeddedPanelWorkspace({ panel, runtime, suspended = false, onOpenRunti
           <strong>{displayState === "missing" ? `${label} 尚未准备` : displayState === "offline" ? `${label} 尚未启动` : displayState === "error" ? `${label} 暂时无法打开` : `正在打开 ${label}`}</strong>
           <p>{displayState === "missing" ? "请先完成本机组件准备，再打开完整设置。" : displayState === "offline" ? "组件已经安装。启动机器人后，完整设置会自动在这里载入。" : displayState === "error" ? panelState.message : "完整设置会显示在这个区域，切换页面不会丢失当前进度。"}</p>
           {(displayState === "offline" || displayState === "missing") && <button className="button button-primary" type="button" onClick={onOpenRuntime}><Power size={14} />前往运行控制</button>}
-          {displayState === "error" && <button className="button button-secondary" type="button" onClick={() => void reload()}><RefreshCw size={14} />重试</button>}
+          {displayState === "error" && (
+            <div className="embedded-placeholder-actions">
+              <button className="button button-primary" type="button" onClick={() => void reload()}><RefreshCw size={14} />重试载入</button>
+              <button className="button button-secondary" type="button" onClick={onOpenRuntime}><Power size={14} />运行控制</button>
+            </div>
+          )}
         </div>
       </div>
     </section>
   );
 }
 
-function Sidebar({ view, onViewChange, desktop, theme, onThemeChange, onClose }: { view: ViewId; onViewChange: (view: ViewId) => void; desktop: boolean; theme: ThemeMode; onThemeChange: (theme: ThemeMode) => void; onClose?: () => void }) {
+function Sidebar({ view, onViewChange, desktop, onClose }: { view: ViewId; onViewChange: (view: ViewId) => void; desktop: boolean; onClose?: () => void }) {
   const workspaceNav = [
     ...(desktop ? [{ id: "runtime" as const, label: "运行控制", icon: Power }] : []),
     ...(desktop ? [
@@ -440,8 +488,11 @@ function Sidebar({ view, onViewChange, desktop, theme, onThemeChange, onClose }:
     { id: "status" as const, label: "运行状态", icon: Gauge },
     { id: "diagnostics" as const, label: "故障诊断", icon: Wrench },
   ];
+  const applicationNav = [
+    { id: "settings" as const, label: "设置", icon: Settings2 },
+  ];
 
-  const renderNav = (label: string, items: typeof workspaceNav | typeof supportNav) => (
+  const renderNav = (label: string, items: typeof workspaceNav | typeof supportNav | typeof applicationNav) => (
     <nav className="nav-section" aria-label={label}>
       <span className="nav-section-label">{label}</span>
       {items.map(({ id, label: itemLabel, icon: Icon }) => (
@@ -449,6 +500,7 @@ function Sidebar({ view, onViewChange, desktop, theme, onThemeChange, onClose }:
           className={view === id ? "active" : ""}
           key={id}
           type="button"
+          data-view={id}
           onClick={() => {
             onViewChange(id);
             onClose?.();
@@ -482,32 +534,7 @@ function Sidebar({ view, onViewChange, desktop, theme, onThemeChange, onClose }:
 
       {workspaceNav.length > 0 && renderNav("工作区", workspaceNav)}
       {renderNav("支持", supportNav)}
-
-      <div className="theme-control">
-        <div className="theme-control-heading">
-          <span>界面主题</span>
-          <small>{theme === "system" ? "跟随 Windows" : theme === "light" ? "亮色" : "暗色"}</small>
-        </div>
-        <div className="theme-options" role="group" aria-label="界面主题">
-          {([
-            { id: "system" as const, label: "系统", icon: Monitor },
-            { id: "light" as const, label: "亮色", icon: Sun },
-            { id: "dark" as const, label: "暗色", icon: Moon },
-          ]).map(({ id, label, icon: Icon }) => (
-            <button
-              className={theme === id ? "active" : ""}
-              key={id}
-              type="button"
-              aria-pressed={theme === id}
-              title={id === "system" ? "跟随 Windows 主题" : `切换为${label}主题`}
-              onClick={() => onThemeChange(id)}
-            >
-              <Icon size={13} strokeWidth={1.9} />
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
+      {renderNav("应用", applicationNav)}
 
       <div className="sidebar-note">
         <ShieldAlert size={16} />
@@ -517,7 +544,7 @@ function Sidebar({ view, onViewChange, desktop, theme, onThemeChange, onClose }:
         </div>
       </div>
 
-      <div className="sidebar-version">Phase A · Native v0.5.4</div>
+      <div className="sidebar-version">Phase A · Native</div>
     </aside>
   );
 }
@@ -857,15 +884,6 @@ function RuntimeView({ runtime, status, config, checking, onRefresh, onOpenOnboa
   const [logService, setLogService] = useState<"astrbot" | "napcat">("astrbot");
   const [logs, setLogs] = useState("选择组件后读取最近日志。\n日志中的本地凭据会自动脱敏。");
   const [logsLoading, setLogsLoading] = useState(false);
-  const [preferences, setPreferences] = useState<DesktopPreferences>(runtime?.preferences ?? {
-    launchAtLogin: false,
-    startBotAtLogin: false,
-    autoRecovery: true,
-  });
-
-  useEffect(() => {
-    if (runtime?.preferences) setPreferences(runtime.preferences);
-  }, [runtime?.preferences]);
 
   const stackState = runtime?.stackState ?? "unavailable";
   const running = stackState === "running";
@@ -942,12 +960,6 @@ function RuntimeView({ runtime, status, config, checking, onRefresh, onOpenOnboa
     } finally {
       setLogsLoading(false);
     }
-  };
-
-  const updatePreference = async (next: Partial<DesktopPreferences>) => {
-    if (!desktop) return;
-    setPreferences(await desktop.setPreferences(next));
-    await onRefresh();
   };
 
   const serviceState = (id: "astrbot" | "napcat") => {
@@ -1101,50 +1113,21 @@ function RuntimeView({ runtime, status, config, checking, onRefresh, onOpenOnboa
         </section>
       )}
 
-      <div className="runtime-grid">
-        <section className="component-control">
-          <div className="section-label"><span>组件</span><span>运行状态与完整设置</span></div>
-          {(["napcat", "astrbot"] as const).map((id) => {
-            const service = serviceState(id);
-            return (
-              <div className="component-row" key={id}>
-                <div className={`component-icon ${service.running ? "component-running" : ""}`}>{id === "napcat" ? <Bot size={19} /> : <Server size={19} />}</div>
-                <div className="component-copy"><strong>{id === "napcat" ? "NapCat" : "AstrBot"}</strong><span>{service.version ? `${service.version} · ` : ""}{id === "napcat" ? "QQ 登录与 OneBot 网络" : "模型、机器人、知识库与插件"}</span></div>
-                <StatusPill state={service.probe} detail label={service.statusLabel} />
-                <span className="component-detail">{service.detail}</span>
-                <ServiceOpenButton panel={id} href={id === "napcat" ? config.napcatUrl : config.astrbotUrl} disabled={!service.canOpen}>{service.canOpen ? "打开完整设置" : service.installed ? service.running ? "服务恢复后打开" : "启动后打开" : "准备后打开"}</ServiceOpenButton>
-              </div>
-            );
-          })}
-        </section>
-
-        <aside className="desktop-tools">
-          <div className="section-label"><span>本机工具</span><span>数据与偏好</span></div>
-          <button type="button" onClick={() => void desktop?.openDataFolder()}><FolderOpen size={17} /><span><strong>数据目录</strong><small>{runtime?.runtimeDir ?? "初始化中"}</small></span><ExternalLink size={16} /></button>
-          <div className="preference-group">
-            <div className="section-label"><span>后台运行</span><span>托盘与自动恢复</span></div>
-            <PreferenceToggle
-              label="开机启动控制台"
-              detail="登录 Windows 后在托盘运行"
-              checked={preferences.launchAtLogin}
-              onChange={(checked) => void updatePreference({ launchAtLogin: checked })}
-            />
-            <PreferenceToggle
-              label="开机后启动机器人"
-              detail="自动启动 AstrBot、NapCat 与 QQ"
-              checked={preferences.startBotAtLogin}
-              disabled={!preferences.launchAtLogin}
-              onChange={(checked) => void updatePreference({ startBotAtLogin: checked })}
-            />
-            <PreferenceToggle
-              label="掉线自动恢复"
-              detail="确认异常后自动重启组件"
-              checked={preferences.autoRecovery}
-              onChange={(checked) => void updatePreference({ autoRecovery: checked })}
-            />
-          </div>
-        </aside>
-      </div>
+      <section className="component-control">
+        <div className="section-label"><span>组件</span><span>运行状态与完整设置</span></div>
+        {(["napcat", "astrbot"] as const).map((id) => {
+          const service = serviceState(id);
+          return (
+            <div className="component-row" key={id}>
+              <div className={`component-icon ${service.running ? "component-running" : ""}`}>{id === "napcat" ? <Bot size={19} /> : <Server size={19} />}</div>
+              <div className="component-copy"><strong>{id === "napcat" ? "NapCat" : "AstrBot"}</strong><span>{service.version ? `${service.version} · ` : ""}{id === "napcat" ? "QQ 登录与 OneBot 网络" : "模型、机器人、知识库与插件"}</span></div>
+              <StatusPill state={service.probe} detail label={service.statusLabel} />
+              <span className="component-detail">{service.detail}</span>
+              <ServiceOpenButton panel={id} href={id === "napcat" ? config.napcatUrl : config.astrbotUrl} disabled={!service.canOpen}>{service.canOpen ? "打开完整设置" : service.installed ? service.running ? "服务恢复后打开" : "启动后打开" : "准备后打开"}</ServiceOpenButton>
+            </div>
+          );
+        })}
+      </section>
 
       <section className="log-console">
         <div className="log-toolbar">
@@ -1161,11 +1144,223 @@ function RuntimeView({ runtime, status, config, checking, onRefresh, onOpenOnboa
   );
 }
 
+function SettingsView({
+  runtime,
+  theme,
+  onThemeChange,
+  fontScale,
+  onFontScaleChange,
+  onRefresh,
+}: {
+  runtime: DesktopRuntimeState | null;
+  theme: ThemeMode;
+  onThemeChange: (theme: ThemeMode) => void;
+  fontScale: FontScale;
+  onFontScaleChange: (scale: FontScale) => void;
+  onRefresh: () => Promise<void> | void;
+}) {
+  const desktop = window.rosemewbotDesktop;
+  const [preferences, setPreferences] = useState<DesktopPreferences>(runtime?.preferences ?? {
+    launchAtLogin: false,
+    startBotAtLogin: false,
+    autoRecovery: true,
+  });
+  const [appVersion, setAppVersion] = useState("读取中");
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [updateResult, setUpdateResult] = useState<DesktopAppUpdateResult | null>(null);
+  const [uninstalling, setUninstalling] = useState(false);
+  const [actionFeedback, setActionFeedback] = useState<{ ok: boolean; message: string } | null>(null);
+
+  useEffect(() => {
+    if (runtime?.preferences) setPreferences(runtime.preferences);
+  }, [runtime?.preferences]);
+
+  useEffect(() => {
+    if (!desktop) {
+      setAppVersion("网页版");
+      return;
+    }
+    void desktop.getAppVersion()
+      .then((version) => setAppVersion(version))
+      .catch(() => setAppVersion("未知"));
+  }, [desktop]);
+
+  const updatePreference = async (next: Partial<DesktopPreferences>) => {
+    if (!desktop) return;
+    setActionFeedback(null);
+    try {
+      setPreferences(await desktop.setPreferences(next));
+      await onRefresh();
+    } catch (error) {
+      setActionFeedback({ ok: false, message: error instanceof Error ? error.message : "无法保存设置" });
+    }
+  };
+
+  const checkAppUpdate = async () => {
+    if (!desktop) return;
+    setCheckingUpdate(true);
+    setUpdateResult(null);
+    try {
+      setUpdateResult(await desktop.checkAppUpdate());
+    } catch (error) {
+      setUpdateResult({
+        status: "error",
+        currentVersion: appVersion,
+        latestVersion: null,
+        releaseUrl: "",
+        publishedAt: null,
+        checkedAt: new Date().toISOString(),
+        message: error instanceof Error ? error.message : "暂时无法检查更新",
+      });
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
+
+  const uninstallApp = async () => {
+    if (!desktop) return;
+    setUninstalling(true);
+    setActionFeedback(null);
+    try {
+      const result = await desktop.uninstallApp();
+      if (result.code === "CANCELLED") {
+        setUninstalling(false);
+        return;
+      }
+      setActionFeedback(result);
+      if (!result.ok) setUninstalling(false);
+    } catch (error) {
+      setActionFeedback({ ok: false, message: error instanceof Error ? error.message : "无法启动完全卸载" });
+      setUninstalling(false);
+    }
+  };
+
+  return (
+    <div className="view-enter settings-view">
+      <section className="page-heading compact-heading settings-heading">
+        <div>
+          <span className="eyebrow">APP SETTINGS</span>
+          <h1>设置</h1>
+          <p>调整阅读体验、后台行为和 Rosemewbot 自身维护选项。组件版本仍在运行控制中管理。</p>
+        </div>
+      </section>
+
+      {actionFeedback && (
+        <div className={`action-feedback ${actionFeedback.ok ? "feedback-ok" : "feedback-error"}`}>
+          {actionFeedback.ok ? <Check size={15} /> : <CircleAlert size={15} />}
+          <span>{actionFeedback.message}</span>
+        </div>
+      )}
+
+      <div className="settings-sections">
+        <section className="settings-section" aria-labelledby="appearance-settings-title">
+          <div className="settings-section-heading">
+            <Monitor size={18} />
+            <div><h2 id="appearance-settings-title">外观</h2><p>更改后立即生效，并记住你的选择。</p></div>
+          </div>
+          <div className="settings-panel">
+            <div className="setting-row">
+              <div className="setting-copy"><strong>界面主题</strong><small>{theme === "system" ? "当前跟随 Windows" : theme === "light" ? "当前使用亮色" : "当前使用暗色"}</small></div>
+              <div className="theme-options setting-options" role="group" aria-label="界面主题">
+                {([
+                  { id: "system" as const, label: "系统", icon: Monitor },
+                  { id: "light" as const, label: "亮色", icon: Sun },
+                  { id: "dark" as const, label: "暗色", icon: Moon },
+                ]).map(({ id, label, icon: Icon }) => (
+                  <button className={theme === id ? "active" : ""} key={id} type="button" aria-pressed={theme === id} onClick={() => onThemeChange(id)}>
+                    <Icon size={14} strokeWidth={1.9} />{label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="setting-row">
+              <div className="setting-copy"><strong>界面字号</strong><small>默认使用“舒适”，同时放大提示、说明和日志文字。</small></div>
+              <div className="font-scale-options" role="group" aria-label="界面字号">
+                {([
+                  { id: "standard" as const, label: "标准", scale: "100%" },
+                  { id: "comfortable" as const, label: "舒适", scale: "115%" },
+                  { id: "large" as const, label: "大号", scale: "130%" },
+                ]).map((option) => (
+                  <button className={fontScale === option.id ? "active" : ""} key={option.id} type="button" aria-pressed={fontScale === option.id} onClick={() => onFontScaleChange(option.id)}>
+                    <span>{option.label}</span><small>{option.scale}</small>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {desktop && (
+          <section className="settings-section" aria-labelledby="startup-settings-title">
+            <div className="settings-section-heading">
+              <Power size={18} />
+              <div><h2 id="startup-settings-title">启动与恢复</h2><p>控制托盘启动和组件异常恢复。</p></div>
+            </div>
+            <div className="settings-panel">
+              <PreferenceToggle label="开机启动控制台" detail="登录 Windows 后在托盘运行" checked={preferences.launchAtLogin} onChange={(checked) => void updatePreference({ launchAtLogin: checked })} />
+              <PreferenceToggle label="开机后启动机器人" detail="自动启动 AstrBot、NapCat 与 QQ" checked={preferences.startBotAtLogin} disabled={!preferences.launchAtLogin} onChange={(checked) => void updatePreference({ startBotAtLogin: checked })} />
+              <PreferenceToggle label="掉线自动恢复" detail="确认异常后自动重启组件" checked={preferences.autoRecovery} onChange={(checked) => void updatePreference({ autoRecovery: checked })} />
+            </div>
+          </section>
+        )}
+
+        <section className="settings-section" aria-labelledby="maintenance-settings-title">
+          <div className="settings-section-heading">
+            <Download size={18} />
+            <div><h2 id="maintenance-settings-title">应用与数据</h2><p>管理 Rosemewbot 自身版本和本机数据。</p></div>
+          </div>
+          <div className="settings-panel">
+            <div className="setting-row">
+              <div className="setting-copy"><strong>Rosemewbot 应用更新</strong><small>当前版本 v{appVersion} · 正式发布通道</small></div>
+              <button className="button button-secondary" type="button" disabled={!desktop || checkingUpdate} onClick={() => void checkAppUpdate()}>
+                <RefreshCw size={15} className={checkingUpdate ? "spin" : ""} />{checkingUpdate ? "正在检查" : updateResult ? "重新检查" : "检查更新"}
+              </button>
+            </div>
+            {updateResult && (
+              <div className={`settings-feedback update-${updateResult.status}`} role="status" aria-live="polite">
+                {updateResult.status === "current" ? <Check size={16} /> : updateResult.status === "available" ? <Download size={16} /> : <CircleAlert size={16} />}
+                <span>{updateResult.message}</span>
+                {updateResult.status === "available" && (
+                  <button className="button button-primary" type="button" onClick={() => void desktop?.openAppUpdatePage()}>
+                    前往下载 v{updateResult.latestVersion}<ExternalLink size={14} />
+                  </button>
+                )}
+              </div>
+            )}
+            {desktop && (
+              <div className="setting-row">
+                <div className="setting-copy"><strong>数据目录</strong><small>{runtime?.runtimeDir ?? "初始化中"}</small></div>
+                <button className="button button-secondary" type="button" onClick={() => void desktop.openDataFolder()}><FolderOpen size={15} />打开目录</button>
+              </div>
+            )}
+          </div>
+        </section>
+
+        {desktop && (
+          <section className="settings-section danger-settings-section" aria-labelledby="danger-settings-title">
+            <div className="settings-section-heading">
+              <ShieldAlert size={18} />
+              <div><h2 id="danger-settings-title">危险操作</h2><p>执行前会再次要求确认。</p></div>
+            </div>
+            <div className="settings-panel">
+              <div className="setting-row danger-setting-row">
+                <div className="setting-copy"><strong>一键完全卸载</strong><small>删除 Rosemewbot、组件、配置、凭据、缓存与日志；不会卸载腾讯 QQ。</small></div>
+                <button className="button button-danger" type="button" disabled={uninstalling} onClick={() => void uninstallApp()}>
+                  <Trash2 size={15} />{uninstalling ? "正在启动卸载" : "完全卸载"}
+                </button>
+              </div>
+            </div>
+          </section>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function DiagnosticsView({ status, config, onRefresh }: { status: StackStatus; config: PublicConfig; onRefresh: () => Promise<void> | void }) {
   const desktop = window.rosemewbotDesktop;
   const [report, setReport] = useState<DesktopDiagnosticReport | null>(null);
   const [loading, setLoading] = useState(false);
-  const [uninstalling, setUninstalling] = useState(false);
   const [feedback, setFeedback] = useState<{ ok: boolean; message: string } | null>(null);
 
   const diagnose = useCallback(async () => {
@@ -1195,24 +1390,6 @@ function DiagnosticsView({ status, config, onRefresh }: { status: StackStatus; c
     await diagnose();
   };
 
-  const uninstallApp = async () => {
-    if (!desktop) return;
-    setUninstalling(true);
-    setFeedback(null);
-    try {
-      const result = await desktop.uninstallApp();
-      if (result.code === "CANCELLED") {
-        setUninstalling(false);
-        return;
-      }
-      setFeedback(result);
-      if (!result.ok) setUninstalling(false);
-    } catch (error) {
-      setFeedback({ ok: false, message: error instanceof Error ? error.message : "无法启动完全卸载" });
-      setUninstalling(false);
-    }
-  };
-
   const passed = report?.items.filter((item) => item.severity === "pass").length ?? 0;
   const attention = report?.items.filter((item) => item.severity !== "pass").length ?? 0;
 
@@ -1224,7 +1401,7 @@ function DiagnosticsView({ status, config, onRefresh }: { status: StackStatus; c
           <h1>智能诊断</h1>
           <p>检查组件、QQ 登录、真实 OneBot 连接、模型配置、端口与磁盘空间，并给出可执行的处理动作。</p>
         </div>
-        <button className="button button-primary" type="button" onClick={() => void diagnose()} disabled={loading || uninstalling || !desktop}>
+        <button className="button button-primary" type="button" onClick={() => void diagnose()} disabled={loading || !desktop}>
           <RefreshCw size={15} className={loading ? "spin" : ""} />
           {loading ? "正在诊断" : "重新诊断"}
         </button>
@@ -1263,13 +1440,6 @@ function DiagnosticsView({ status, config, onRefresh }: { status: StackStatus; c
           <div className="reference-divider" />
           <p>系统每 15 秒检查一次运行状态。仅在机器人原本应当运行且确认异常后，自动恢复才会重启组件。</p>
           <div className="command-line compact"><code>本机端口 · 自动验收 · 安全恢复</code></div>
-          <div className="danger-zone">
-            <div className="danger-zone-title"><ShieldAlert size={16} /><span><strong>危险操作</strong><small>程序与本地数据不可恢复</small></span></div>
-            <p>停止机器人并删除 Rosemewbot、全部组件、配置、凭据、缓存与日志；不会卸载腾讯 QQ。</p>
-            <button className="button button-danger" type="button" disabled={!desktop || uninstalling} onClick={() => void uninstallApp()}>
-              <Trash2 size={15} />{uninstalling ? "正在启动卸载" : "一键完全卸载"}
-            </button>
-          </div>
         </aside>
       </div>
     </div>
@@ -1286,6 +1456,7 @@ export function App() {
   const [checking, setChecking] = useState(true);
   const [mobileNav, setMobileNav] = useState(false);
   const { theme, setTheme } = useThemePreference();
+  const { fontScale, setFontScale } = useFontScalePreference();
   const { completed, toggle } = usePersistentSteps();
 
   useEffect(() => {
@@ -1348,8 +1519,8 @@ export function App() {
 
   return (
     <div className="app-shell">
-      <Sidebar view={view} onViewChange={setView} desktop={desktop} theme={theme} onThemeChange={setTheme} />
-      {mobileNav && <div className="mobile-sidebar-backdrop" onClick={() => setMobileNav(false)}><div onClick={(event) => event.stopPropagation()}><Sidebar view={view} onViewChange={setView} desktop={desktop} theme={theme} onThemeChange={setTheme} onClose={() => setMobileNav(false)} /></div></div>}
+      <Sidebar view={view} onViewChange={setView} desktop={desktop} />
+      {mobileNav && <div className="mobile-sidebar-backdrop" onClick={() => setMobileNav(false)}><div onClick={(event) => event.stopPropagation()}><Sidebar view={view} onViewChange={setView} desktop={desktop} onClose={() => setMobileNav(false)} /></div></div>}
       <main>
         <Topbar status={status} acceptance={acceptance} runtime={runtime} checking={checking} onRefresh={refresh} onMenu={() => setMobileNav(true)} />
         <div className={`content-wrap ${view === "napcat" || view === "astrbot" ? "embedded-content-wrap" : ""}`}>
@@ -1359,6 +1530,7 @@ export function App() {
           {view === "onboarding" && <Onboarding config={config} status={status} acceptance={acceptance} checking={checking} onRefresh={refresh} completed={completed} onToggle={toggle} />}
           {view === "status" && <StatusView status={status} config={config} acceptance={acceptance} runtime={runtime} checking={checking} onRefresh={refresh} />}
           {view === "diagnostics" && <DiagnosticsView status={status} config={config} onRefresh={refresh} />}
+          {view === "settings" && <SettingsView runtime={runtime} theme={theme} onThemeChange={setTheme} fontScale={fontScale} onFontScaleChange={setFontScale} onRefresh={refresh} />}
         </div>
       </main>
     </div>

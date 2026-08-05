@@ -146,6 +146,16 @@ export interface DesktopActionResult {
   code?: "QQ_REQUIRED" | "QQ_DOWNLOAD_FAILED" | "UNSUPPORTED_PLATFORM" | "ALREADY_CURRENT" | "NO_SNAPSHOT" | "ROLLED_BACK" | "CANCELLED" | "UNINSTALLER_NOT_FOUND";
 }
 
+export interface DesktopAppUpdateResult {
+  status: "current" | "available" | "error";
+  currentVersion: string;
+  latestVersion: string | null;
+  releaseUrl: string;
+  publishedAt: string | null;
+  checkedAt: string;
+  message: string;
+}
+
 export type DesktopAction = "install" | "install-qq" | "start" | "stop" | "restart" | "update" | "repair" | "rollback";
 
 export type EmbeddedPanelId = "astrbot" | "napcat";
@@ -163,4 +173,4 @@ export interface EmbeddedPanelState {
   message: string;
 }
 
-export type ViewId = "runtime" | "napcat" | "astrbot" | "onboarding" | "status" | "diagnostics";
+export type ViewId = "runtime" | "napcat" | "astrbot" | "onboarding" | "status" | "diagnostics" | "settings";

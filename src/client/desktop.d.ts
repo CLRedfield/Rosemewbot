@@ -1,6 +1,7 @@
 import type {
   DesktopActionResult,
   DesktopAction,
+  DesktopAppUpdateResult,
   DesktopCredentials,
   DesktopInstallProgress,
   DesktopDiagnosticReport,
@@ -16,6 +17,9 @@ interface RosemewbotDesktopApi {
   isDesktop: true;
   getConfig(): Promise<PublicConfig>;
   getStatus(): Promise<DesktopStatus>;
+  getAppVersion(): Promise<string>;
+  checkAppUpdate(): Promise<DesktopAppUpdateResult>;
+  openAppUpdatePage(): Promise<{ ok: boolean }>;
   runAction(action: DesktopAction): Promise<DesktopActionResult>;
   getPreferences(): Promise<DesktopPreferences>;
   setPreferences(preferences: Partial<DesktopPreferences>): Promise<DesktopPreferences>;
