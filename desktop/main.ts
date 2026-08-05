@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { cp, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -6,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import {
   app,
   BrowserWindow,
+  dialog,
   ipcMain,
   Menu,
   nativeTheme,
@@ -27,6 +29,7 @@ import {
   type NativePreferences,
   type NativeServiceId,
 } from "./native-runtime.js";
+import { buildFullUninstallPlan } from "./uninstall.js";
 
 type PanelId = "astrbot" | "napcat";
 type PanelLoadState = "loading" | "ready" | "error";
@@ -105,6 +108,66 @@ function syncLoginItemSettings(preferences: NativePreferences) {
     path: process.execPath,
     args: ["--background"],
   });
+}
+
+async function requestFullUninstall() {
+  if (!app.isPackaged || process.platform !== "win32") {
+    return { ok: false, message: "一键完全卸载仅在已安装的 Windows 版本中可用" };
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return { ok: false, message: "主窗口不可用，请重新打开 Rosemewbot 后再试" };
+  }
+
+  const confirmation = await dialog.showMessageBox(mainWindow, {
+    type: "warning",
+    title: "完全卸载 Rosemewbot",
+    message: "确认完全卸载 Rosemewbot？",
+    detail: "此操作将停止机器人，并永久删除 Rosemewbot、AstrBot、NapCat、独立 Python、配置、凭据、缓存与日志。腾讯 QQ 本身不会被卸载。",
+    buttons: ["取消", "完全卸载"],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  });
+  if (confirmation.response !== 1) {
+    return { ok: false, code: "CANCELLED" as const, message: "已取消完全卸载" };
+  }
+
+  const plan = buildFullUninstallPlan(process.execPath);
+  if (!existsSync(plan.uninstallerPath)) {
+    return { ok: false, code: "UNINSTALLER_NOT_FOUND" as const, message: "没有找到卸载程序，请重新安装后再试" };
+  }
+
+  try {
+    await runtimeManager.stopAll();
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "停止机器人组件失败" };
+  }
+
+  app.setLoginItemSettings({
+    openAtLogin: false,
+    path: process.execPath,
+    args: ["--background"],
+  });
+  if (watchdogTimer) clearInterval(watchdogTimer);
+  watchdogTimer = null;
+
+  setTimeout(() => {
+    try {
+      const child = spawn(plan.uninstallerPath, plan.arguments, {
+        detached: true,
+        stdio: "ignore",
+        windowsHide: false,
+      });
+      child.once("error", (error) => console.error("Unable to launch full uninstaller", error));
+      child.unref();
+      isQuitting = true;
+      app.quit();
+    } catch (error) {
+      console.error("Unable to launch full uninstaller", error);
+    }
+  }, 500);
+
+  return { ok: true, message: "正在关闭 Rosemewbot 并执行完全卸载…" };
 }
 
 async function performRuntimeAction(action: NativeAction) {
@@ -443,6 +506,7 @@ function registerIpc() {
     const error = await shell.openPath(runtimeManager.runtimeDir);
     return { ok: !error, message: error };
   }));
+  ipcMain.handle("desktop:uninstall-app", trustedHandler(() => requestFullUninstall()));
   ipcMain.handle("desktop:open-qq-download", trustedHandler(async () => {
     await shell.openExternal("https://im.qq.com/pcqq/index.shtml");
     return { ok: true };

@@ -91,3 +91,25 @@ Function InstallLocationPageLeave
 FunctionEnd
 
 !endif
+
+; The regular Windows uninstaller keeps the adjacent data directory. This
+; destructive cleanup runs only when the in-app "full uninstall" action passes
+; the dedicated flag after explicit user confirmation.
+!macro customUnInstall
+  ${GetParameters} $R8
+  ${GetOptions} $R8 "--delete-rosemewbot-data" $R9
+  ${IfNot} ${Errors}
+    RMDir /r "$INSTDIR-data"
+    RMDir /r "C:\Agent Space QQ Assistant"
+    RMDir /r "C:\Agent Space QQ Assistant-data"
+
+    ${If} $installMode == "all"
+      SetShellVarContext current
+    ${EndIf}
+    RMDir /r "$LOCALAPPDATA\Programs\Rosemewbot-data"
+    RMDir /r "$APPDATA\agent-space-qq-bridge"
+    ${If} $installMode == "all"
+      SetShellVarContext all
+    ${EndIf}
+  ${EndIf}
+!macroend

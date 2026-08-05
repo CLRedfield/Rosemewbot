@@ -142,7 +142,7 @@ export interface DesktopCredentials {
 export interface DesktopActionResult {
   ok: boolean;
   message: string;
-  code?: "QQ_REQUIRED" | "QQ_DOWNLOAD_FAILED" | "UNSUPPORTED_PLATFORM" | "ALREADY_CURRENT" | "NO_SNAPSHOT" | "ROLLED_BACK";
+  code?: "QQ_REQUIRED" | "QQ_DOWNLOAD_FAILED" | "UNSUPPORTED_PLATFORM" | "ALREADY_CURRENT" | "NO_SNAPSHOT" | "ROLLED_BACK" | "CANCELLED" | "UNINSTALLER_NOT_FOUND";
 }
 
 export type DesktopAction = "install" | "install-qq" | "start" | "stop" | "restart" | "update" | "repair" | "rollback";

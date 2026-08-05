@@ -28,6 +28,7 @@ interface RosemewbotDesktopApi {
   hidePanel(panel?: EmbeddedPanelId): Promise<{ ok: boolean }>;
   reloadPanel(panel: EmbeddedPanelId): Promise<{ ok: boolean }>;
   openDataFolder(): Promise<DesktopActionResult>;
+  uninstallApp(): Promise<DesktopActionResult>;
   openQQDownload(): Promise<{ ok: boolean }>;
   setTheme(theme: "system" | "light" | "dark"): Promise<{ ok: boolean }>;
   onRuntimeProgress(callback: (progress: DesktopInstallProgress) => void): () => void;

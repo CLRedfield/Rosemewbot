@@ -31,6 +31,7 @@ import {
   Square,
   Sun,
   TerminalSquare,
+  Trash2,
   Download,
   Power,
   Wifi,
@@ -1119,7 +1120,8 @@ function DiagnosticsView({ status, config, onRefresh }: { status: StackStatus; c
   const desktop = window.rosemewbotDesktop;
   const [report, setReport] = useState<DesktopDiagnosticReport | null>(null);
   const [loading, setLoading] = useState(false);
-  const [feedback, setFeedback] = useState<string | null>(null);
+  const [uninstalling, setUninstalling] = useState(false);
+  const [feedback, setFeedback] = useState<{ ok: boolean; message: string } | null>(null);
 
   const diagnose = useCallback(async () => {
     if (!desktop) return;
@@ -1143,9 +1145,27 @@ function DiagnosticsView({ status, config, onRefresh }: { status: StackStatus; c
       return;
     }
     const result = await desktop.runAction(action);
-    setFeedback(result.message);
+    setFeedback(result);
     await onRefresh();
     await diagnose();
+  };
+
+  const uninstallApp = async () => {
+    if (!desktop) return;
+    setUninstalling(true);
+    setFeedback(null);
+    try {
+      const result = await desktop.uninstallApp();
+      if (result.code === "CANCELLED") {
+        setUninstalling(false);
+        return;
+      }
+      setFeedback(result);
+      if (!result.ok) setUninstalling(false);
+    } catch (error) {
+      setFeedback({ ok: false, message: error instanceof Error ? error.message : "无法启动完全卸载" });
+      setUninstalling(false);
+    }
   };
 
   const passed = report?.items.filter((item) => item.severity === "pass").length ?? 0;
@@ -1159,7 +1179,7 @@ function DiagnosticsView({ status, config, onRefresh }: { status: StackStatus; c
           <h1>智能诊断</h1>
           <p>检查组件、QQ 登录、真实 OneBot 连接、模型配置、端口与磁盘空间，并给出可执行的处理动作。</p>
         </div>
-        <button className="button button-primary" type="button" onClick={() => void diagnose()} disabled={loading || !desktop}>
+        <button className="button button-primary" type="button" onClick={() => void diagnose()} disabled={loading || uninstalling || !desktop}>
           <RefreshCw size={15} className={loading ? "spin" : ""} />
           {loading ? "正在诊断" : "重新诊断"}
         </button>
@@ -1170,7 +1190,7 @@ function DiagnosticsView({ status, config, onRefresh }: { status: StackStatus; c
         <div><strong>{report?.summary ?? (desktop ? "正在读取本机状态…" : "智能诊断仅在 Windows 桌面版提供。")}</strong><span>{report ? `${passed} 项通过 · ${attention} 项需处理 · ${new Date(report.checkedAt).toLocaleTimeString()}` : ""}</span></div>
       </div>
 
-      {feedback && <div className="action-feedback feedback-ok"><Check size={15} /><span>{feedback}</span></div>}
+      {feedback && <div className={`action-feedback ${feedback.ok ? "feedback-ok" : "feedback-error"}`}>{feedback.ok ? <Check size={15} /> : <CircleAlert size={15} />}<span>{feedback.message}</span></div>}
 
       <div className="diagnostic-layout">
         <section className="diagnostic-results" aria-label="诊断结果">
@@ -1198,6 +1218,13 @@ function DiagnosticsView({ status, config, onRefresh }: { status: StackStatus; c
           <div className="reference-divider" />
           <p>系统每 15 秒检查一次运行状态。仅在机器人原本应当运行且确认异常后，自动恢复才会重启组件。</p>
           <div className="command-line compact"><code>本机端口 · 自动验收 · 安全恢复</code></div>
+          <div className="danger-zone">
+            <div className="danger-zone-title"><ShieldAlert size={16} /><span><strong>危险操作</strong><small>程序与本地数据不可恢复</small></span></div>
+            <p>停止机器人并删除 Rosemewbot、全部组件、配置、凭据、缓存与日志；不会卸载腾讯 QQ。</p>
+            <button className="button button-danger" type="button" disabled={!desktop || uninstalling} onClick={() => void uninstallApp()}>
+              <Trash2 size={15} />{uninstalling ? "正在启动卸载" : "一键完全卸载"}
+            </button>
+          </div>
         </aside>
       </div>
     </div>

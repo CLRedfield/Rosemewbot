@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld("rosemewbotDesktop", {
   hidePanel: (panel?: PanelId) => ipcRenderer.invoke("desktop:hide-panel", panel),
   reloadPanel: (panel: PanelId) => ipcRenderer.invoke("desktop:reload-panel", panel),
   openDataFolder: () => ipcRenderer.invoke("desktop:open-data-folder"),
+  uninstallApp: () => ipcRenderer.invoke("desktop:uninstall-app"),
   openQQDownload: () => ipcRenderer.invoke("desktop:open-qq-download"),
   setTheme: (theme: "system" | "light" | "dark") => ipcRenderer.invoke("desktop:set-theme", theme),
   onRuntimeProgress: (callback: (progress: InstallProgress) => void) => {
