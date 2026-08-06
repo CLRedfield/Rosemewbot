@@ -38,6 +38,7 @@ import {
   type GitHubAppRelease,
 } from "./app-update.js";
 import { buildFullUninstallPlan } from "./uninstall.js";
+import { syncWindowsLoginItem, type LoginItemSyncResult } from "./login-item.js";
 
 type PanelId = "astrbot" | "napcat";
 type PanelLoadState = "loading" | "ready" | "error";
@@ -111,13 +112,25 @@ function showMainWindow() {
   mainWindow.focus();
 }
 
-function syncLoginItemSettings(preferences: NativePreferences) {
-  if (!app.isPackaged || process.platform !== "win32") return;
-  app.setLoginItemSettings({
-    openAtLogin: preferences.launchAtLogin,
-    path: process.execPath,
-    args: ["--background"],
-  });
+function syncLoginItemSettings(preferences: NativePreferences): LoginItemSyncResult {
+  const result = syncWindowsLoginItem(app, preferences.launchAtLogin, process.execPath);
+  if (!result.matches) {
+    console.error("Windows login item verification failed", result);
+  }
+  return result;
+}
+
+async function updatePreferences(next: Partial<NativePreferences>) {
+  const previous = await runtimeManager.getPreferences();
+  const preferences = await runtimeManager.setPreferences(next);
+  if (typeof next.launchAtLogin !== "boolean") return preferences;
+
+  const loginItem = syncLoginItemSettings(preferences);
+  if (loginItem.matches) return preferences;
+
+  await runtimeManager.setPreferences(previous);
+  syncLoginItemSettings(previous);
+  throw new Error("Windows 开机启动项写入失败，请检查系统的‘启动应用’设置后重试");
 }
 
 async function checkApplicationUpdate() {
@@ -246,8 +259,11 @@ async function refreshTray() {
       type: "checkbox",
       checked: preferences.launchAtLogin,
       click: async (item) => {
-        const next = await runtimeManager.setPreferences({ launchAtLogin: item.checked });
-        syncLoginItemSettings(next);
+        try {
+          await updatePreferences({ launchAtLogin: item.checked });
+        } catch (error) {
+          console.error("Unable to update Windows login item", error);
+        }
         await refreshTray();
       },
     },
@@ -564,8 +580,7 @@ function registerIpc() {
     const allowed = ["launchAtLogin", "startBotAtLogin", "autoRecovery"];
     if (Object.keys(next).some((key) => !allowed.includes(key))) throw new Error("Unsupported preference key");
     if (Object.values(next).some((value) => typeof value !== "boolean")) throw new Error("Unsupported preference value");
-    const preferences = await runtimeManager.setPreferences(next);
-    syncLoginItemSettings(preferences);
+    const preferences = await updatePreferences(next);
     await refreshTray();
     return preferences;
   }));
@@ -734,8 +749,8 @@ const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
-  app.on("second-instance", () => {
-    showMainWindow();
+  app.on("second-instance", (_event, commandLine) => {
+    if (!commandLine.includes("--background")) showMainWindow();
   });
 
   app.whenReady().then(async () => {
@@ -745,12 +760,22 @@ if (!gotLock) {
     await migrateLegacyRuntime();
     runtimeManager = new NativeRuntimeManager(app.getPath("userData"), sendRuntimeProgress);
     await runtimeManager.initialize();
+    let preferences = await runtimeManager.getPreferences();
+    const loginItem = syncLoginItemSettings(preferences);
+    const loginItemWarning = preferences.launchAtLogin && !loginItem.matches;
+    if (loginItemWarning) {
+      preferences = await runtimeManager.setPreferences({ launchAtLogin: false });
+    }
     await registerAppProtocol();
     registerIpc();
     if (!smokeTest && !captureUi) createTray();
     await createMainWindow();
-    const preferences = await runtimeManager.getPreferences();
-    syncLoginItemSettings(preferences);
+    if (loginItemWarning && Notification.isSupported()) {
+      new Notification({
+        title: "Rosemewbot 开机启动未生效",
+        body: "Windows 没有启用该启动项，应用已关闭开关；请在设置中重新开启。",
+      }).show();
+    }
     if (!smokeTest && !captureUi) startWatchdog();
     if (backgroundLaunch && preferences.startBotAtLogin) await performRuntimeAction("start");
   }).catch((error) => {

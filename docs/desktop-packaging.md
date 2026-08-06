@@ -52,7 +52,7 @@ native-runtime/
 └── secrets.json      本机生成的后台凭据
 ```
 
-Windows 常规卸载只删除程序目录，不删除相邻的 `-data` 目录。“设置”页危险操作中的一键完全卸载会先显示原生危险确认框，确认后停止受控组件、关闭开机启动，再调用已安装目录中的卸载器；专用参数会额外删除相邻数据目录、旧 AppData 数据和旧品牌残留。腾讯 QQ 本身不会被卸载。更新和修复仍会保留 `astrbot/data` 与 `napcat/config`；首次运行新版时，如果发现旧版 `%APPDATA%\agent-space-qq-bridge\native-runtime`，会自动迁移到新位置。
+Windows 常规卸载只删除程序目录，不删除相邻的 `-data` 目录。“设置”页危险操作中的一键完全卸载会先显示原生危险确认框，确认后停止受控组件、关闭开机启动，再调用已安装目录中的卸载器；专用参数会额外删除相邻数据目录、旧 AppData 数据和旧品牌残留。腾讯 QQ 本身不会被卸载。更新和修复仍会保留 `astrbot/data` 与 `napcat/config`；首次运行新版时，如果发现旧版 `%APPDATA%\agent-space-qq-bridge\native-runtime`，会自动迁移到新位置。开机启动开关写入后会反查 Windows 的实际启用状态；若系统保留了禁用记录，应用会重建一次启动项并再次验证，验证失败时不会让界面错误地显示为已开启。
 
 ## 快捷操作
 
@@ -134,7 +134,7 @@ npm run desktop:pack
 构建产物：
 
 ```text
-release/Rosemewbot-Setup-0.5.6-x64.exe
+release/Rosemewbot-Setup-0.5.7-x64.exe
 release/win-unpacked/Rosemewbot.exe
 ```
 
