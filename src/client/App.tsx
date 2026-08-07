@@ -59,7 +59,7 @@ import type {
   ViewId,
 } from "./types";
 import { copyTextToClipboard } from "./clipboard";
-import { createFirstSetupPlan, getRuntimeServicePresentation } from "./runtime-logic";
+import { createFirstSetupPlan, getQQSessionPresentation, getRuntimeProgressHeadline, getRuntimeServicePresentation } from "./runtime-logic";
 
 const fallbackConfig: PublicConfig = {
   astrbotUrl: "http://localhost:6185",
@@ -78,6 +78,13 @@ const emptyAcceptance: DesktopAcceptanceState = {
   componentsReady: false,
   servicesReady: false,
   qqInstalled: false,
+  qqSession: {
+    state: "unknown",
+    account: null,
+    nickname: null,
+    checkedAt: new Date(0).toISOString(),
+    detail: "等待实时检查 QQ 状态",
+  },
   qqLoginDetected: false,
   qqAccount: null,
   onebotConfigured: false,
@@ -432,7 +439,7 @@ function boundsForElement(element: HTMLElement): EmbeddedPanelBounds {
   };
 }
 
-function EmbeddedPanelWorkspace({ panel, runtime, suspended = false, onOpenRuntime }: { panel: EmbeddedPanelId; runtime: DesktopRuntimeState | null; suspended?: boolean; onOpenRuntime: () => void }) {
+function EmbeddedPanelWorkspace({ panel, runtime, acceptance, suspended = false, onOpenRuntime }: { panel: EmbeddedPanelId; runtime: DesktopRuntimeState | null; acceptance: DesktopAcceptanceState | null; suspended?: boolean; onOpenRuntime: () => void }) {
   const desktop = window.rosemewbotDesktop;
   const hostRef = useRef<HTMLDivElement>(null);
   const label = panel === "napcat" ? "NapCat" : "AstrBot";
@@ -513,8 +520,26 @@ function EmbeddedPanelWorkspace({ panel, runtime, suspended = false, onOpenRunti
   const displayState = !service?.installed ? "missing" : !running ? "offline" : panelState.state;
   const isLoading = displayState === "loading";
   const isError = displayState === "error";
-  const loadStateLabel = isLoading ? "载入中" : displayState === "ready" ? "已连接" : displayState === "offline" ? "等待启动" : displayState === "missing" ? "等待准备" : "载入失败";
-  const loadStateDetail = displayState === "offline" ? `${label} 服务尚未启动` : displayState === "missing" ? `${label} 组件尚未准备` : panelState.message;
+  const qqPresentation = panel === "napcat" && acceptance ? getQQSessionPresentation(acceptance.qqSession) : null;
+  const loadStateLabel = isLoading
+    ? "载入中"
+    : displayState === "ready"
+      ? qqPresentation?.label ?? "已连接"
+      : displayState === "offline"
+        ? "等待启动"
+        : displayState === "missing"
+          ? "等待准备"
+          : "载入失败";
+  const loadStateDetail = displayState === "ready" && qqPresentation
+    ? `NapCat 管理页已连接 · ${qqPresentation.detail}`
+    : displayState === "offline"
+      ? `${label} 服务尚未启动`
+      : displayState === "missing"
+        ? `${label} 组件尚未准备`
+        : panelState.message;
+  const loadStateTone = displayState === "ready" && qqPresentation
+    ? acceptance?.qqSession.state === "offline" ? "error" : qqPresentation.online ? "ready" : "offline"
+    : displayState;
 
   return (
     <section className="embedded-workspace view-enter" aria-label={`${label} 内嵌设置`}>
@@ -530,9 +555,9 @@ function EmbeddedPanelWorkspace({ panel, runtime, suspended = false, onOpenRunti
           <span />
           {running ? "服务运行中" : service?.installed ? "服务未启动" : "组件未准备"}
         </div>
-        <div className={`embedded-load-state state-${displayState}`} role="status" aria-live="polite" title={loadStateDetail}>
+        <div className={`embedded-load-state state-${loadStateTone}`} role="status" aria-live="polite" title={loadStateDetail}>
           {displayState === "loading" && <RefreshCw size={13} className="spin" />}
-          {displayState === "ready" && <Check size={13} />}
+          {displayState === "ready" && (qqPresentation?.online ? <Check size={13} /> : acceptance?.qqSession.state === "offline" ? <CircleAlert size={13} /> : <LogIn size={13} />)}
           {displayState === "error" && <CircleAlert size={13} />}
           {(displayState === "offline" || displayState === "missing") && <Power size={13} />}
           <span>{loadStateLabel}</span>
@@ -636,7 +661,7 @@ function Sidebar({ view, onViewChange, desktop, onClose }: { view: ViewId; onVie
 }
 
 function Topbar({ status, acceptance, runtime, checking, onRefresh, onMenu }: { status: StackStatus; acceptance: DesktopAcceptanceState | null; runtime: DesktopRuntimeState | null; checking: boolean; onRefresh: () => void; onMenu: () => void }) {
-  const ready = acceptance ? acceptance.servicesReady && acceptance.onebotConnected && acceptance.modelConfigured : status.overall === "ready";
+  const ready = acceptance ? acceptance.servicesReady && acceptance.qqSession.state === "online" && acceptance.onebotConnected && acceptance.modelConfigured : status.overall === "ready";
   const stateLabel = checking
     ? "正在检查"
     : ready
@@ -648,7 +673,17 @@ function Topbar({ status, acceptance, runtime, checking, onRefresh, onMenu }: { 
           : runtime?.stackState === "partial"
             ? "部分组件异常"
             : runtime?.stackState === "running"
-              ? "正在连接"
+              ? acceptance?.qqSession.state === "logged-out"
+                ? "等待 QQ 登录"
+                : acceptance?.qqSession.state === "offline"
+                  ? "QQ 已掉线"
+                  : acceptance?.qqSession.state === "unknown"
+                    ? "正在确认 QQ"
+                    : !acceptance?.onebotConnected
+                      ? "正在连接 OneBot"
+                      : !acceptance?.modelConfigured
+                        ? "等待配置模型"
+                        : "正在连接"
               : "等待组件";
   return (
     <header className="topbar">
@@ -694,7 +729,8 @@ function Onboarding({ config, status, acceptance, checking, onRefresh, completed
   const byId = useMemo(() => new Map(status.services.map((service) => [service.id, service])), [status.services]);
   const automatic = Boolean(acceptance);
   const servicesReady = acceptance?.servicesReady ?? (byId.get("napcat")?.state === "ready" && byId.get("astrbot")?.state === "ready");
-  const qqLoginReady = acceptance?.qqLoginDetected ?? completed.has("qq-login");
+  const qqLoginReady = acceptance ? acceptance.qqSession.state === "online" : completed.has("qq-login");
+  const qqPresentation = acceptance ? getQQSessionPresentation(acceptance.qqSession) : null;
   const onebotReady = acceptance?.onebotConnected ?? (byId.get("onebot")?.state === "ready");
   const modelReady = acceptance?.modelConfigured ?? completed.has("model");
   const progress = [servicesReady, qqLoginReady, onebotReady, modelReady, completed.has("test")];
@@ -749,14 +785,20 @@ function Onboarding({ config, status, acceptance, checking, onRefresh, completed
           <WizardStep
             number="02"
             title="登录机器人 QQ"
-            description={acceptance?.qqAccount ? `已自动识别机器人账号 ${acceptance.qqAccount}。建议始终使用独立账号，不要使用主账号。` : "打开 NapCat，在 WebUI 中扫码登录专用 QQ。登录完成后这里会自动识别账号。"}
+            description={qqLoginReady && acceptance?.qqAccount
+              ? `已实时确认机器人账号 ${acceptance.qqAccount} 在线。建议始终使用独立账号，不要使用主账号。`
+              : acceptance?.qqSession.state === "offline"
+                ? "NapCat 管理页可以访问，但 QQ 会话已经掉线。请打开 NapCat 重新登录。"
+                : acceptance?.qqSession.state === "unknown"
+                  ? `暂时无法确认 QQ 是否在线：${acceptance.qqSession.detail}`
+                  : "NapCat 管理页可以访问，正在等待你扫码登录专用 QQ。登录后这里会自动更新。"}
             done={qqLoginReady}
             current={servicesReady && !qqLoginReady}
           >
             <div className="action-row">
               <ServiceOpenButton panel="napcat" href={config.napcatUrl} primary>打开 NapCat</ServiceOpenButton>
               {automatic
-                ? <span className={`auto-check ${qqLoginReady ? "auto-check-ready" : ""}`}><LogIn size={14} />{qqLoginReady ? `QQ ${acceptance?.qqAccount}` : "等待扫码登录"}</span>
+                ? <span className={`auto-check ${qqLoginReady ? "auto-check-ready" : ""}`} title={qqPresentation?.detail}><LogIn size={14} />{qqLoginReady ? `QQ ${acceptance?.qqAccount ?? "在线"}` : qqPresentation?.label ?? "等待扫码登录"}</span>
                 : <CompletionButton done={completed.has("qq-login")} onClick={() => onToggle("qq-login")} />}
             </div>
           </WizardStep>
@@ -850,7 +892,7 @@ function CompletionButton({ done, onClick, label = "我已完成" }: { done: boo
 function ConnectionRail({ status, completed, acceptance }: { status: StackStatus; completed: Set<ManualStepId>; acceptance: DesktopAcceptanceState | null }) {
   const byId = new Map(status.services.map((service) => [service.id, service]));
   const nodes = [
-    { label: acceptance?.qqAccount ? `QQ ${acceptance.qqAccount}` : "QQ 账号", icon: MessageCircle, state: (acceptance?.qqLoginDetected ?? completed.has("qq-login")) ? "ready" : "waiting" },
+    { label: acceptance?.qqAccount ? `QQ ${acceptance.qqAccount}` : "QQ 账号", icon: MessageCircle, state: (acceptance ? acceptance.qqSession.state === "online" : completed.has("qq-login")) ? "ready" : "waiting" },
     { label: "NapCat", icon: Bot, state: byId.get("napcat")?.state ?? "waiting" },
     { label: "OneBot 11", icon: Cable, state: acceptance ? acceptance.onebotConnected ? "ready" : "waiting" : byId.get("onebot")?.state ?? "waiting" },
     { label: "AstrBot", icon: Server, state: byId.get("astrbot")?.state ?? "waiting" },
@@ -877,7 +919,7 @@ function ConnectionRail({ status, completed, acceptance }: { status: StackStatus
       </div>
       <div className="rail-footnote">
         <TerminalSquare size={15} />
-        <span>状态每 15 秒自动刷新。组件、QQ、OneBot 与模型均自动验收，最终回复由你确认。</span>
+        <span>前台每 5 秒刷新 QQ 在线状态。组件、QQ、OneBot 与模型均自动验收，最终回复由你确认。</span>
       </div>
     </aside>
   );
@@ -886,7 +928,17 @@ function ConnectionRail({ status, completed, acceptance }: { status: StackStatus
 function StatusView({ status, config, acceptance, runtime, checking, onRefresh }: { status: StackStatus; config: PublicConfig; acceptance: DesktopAcceptanceState | null; runtime: DesktopRuntimeState | null; checking: boolean; onRefresh: () => void }) {
   const servicePresentation = (service: ServiceProbe) => {
     if (runtime && (service.id === "astrbot" || service.id === "napcat")) {
-      return getRuntimeServicePresentation(runtime?.services.find((item) => item.id === service.id), service);
+      const base = getRuntimeServicePresentation(runtime?.services.find((item) => item.id === service.id), service);
+      if (service.id === "napcat" && acceptance && base.canOpen) {
+        const qq = getQQSessionPresentation(acceptance.qqSession);
+        return {
+          ...base,
+          state: qq.state,
+          label: qq.label,
+          detail: `NapCat 管理页可达 · ${qq.detail}`,
+        };
+      }
+      return base;
     }
     if (service.id === "astrbot" || service.id === "napcat") {
       return {
@@ -910,7 +962,7 @@ function StatusView({ status, config, acceptance, runtime, checking, onRefresh }
   };
   const serviceState = (service: ServiceProbe) => servicePresentation(service).state;
   const ready = status.services.filter((service) => serviceState(service) === "ready").length;
-  const actualReady = acceptance ? acceptance.servicesReady && acceptance.onebotConnected && acceptance.modelConfigured : status.overall === "ready";
+  const actualReady = acceptance ? acceptance.servicesReady && acceptance.qqSession.state === "online" && acceptance.onebotConnected && acceptance.modelConfigured : status.overall === "ready";
   return (
     <div className="view-enter">
       <section className="page-heading compact-heading">
@@ -942,7 +994,7 @@ function StatusView({ status, config, acceptance, runtime, checking, onRefresh }
                 <strong>{service.label}</strong>
               </div>
               <StatusPill state={presentation.state} detail label={presentation.label} />
-              <span className="latency">{presentation.state === "ready" && service.latencyMs !== null ? `${service.latencyMs} ms` : "—"}</span>
+              <span className="latency">{presentation.canOpen && service.latencyMs !== null ? `${service.latencyMs} ms` : "—"}</span>
               <span className="service-detail">{presentation.detail}</span>
               {service.id === "napcat"
                 ? <ServiceOpenButton panel="napcat" href={config.napcatUrl} disabled={!presentation.canOpen}>{presentation.canOpen ? "打开" : "暂不可用"}</ServiceOpenButton>
@@ -957,13 +1009,13 @@ function StatusView({ status, config, acceptance, runtime, checking, onRefresh }
 
       <div className="observability-note">
         <Wifi size={18} />
-        <div><strong>真实连接验收</strong><p>OneBot 状态现在要求 6199 端口存在实际的 ESTABLISHED 连接；只有监听端口不会显示为链路可用。</p></div>
+        <div><strong>真实在线验收</strong><p>NapCat 会实时确认 QQ 登录与在线状态；OneBot 还要求 6199 端口存在实际的 ESTABLISHED 连接。只有管理页可达不会再显示为机器人在线。</p></div>
       </div>
     </div>
   );
 }
 
-function RuntimeView({ runtime, status, config, checking, onRefresh, onOpenOnboarding }: { runtime: DesktopRuntimeState | null; status: StackStatus; config: PublicConfig; checking: boolean; onRefresh: () => Promise<void> | void; onOpenOnboarding: () => void }) {
+function RuntimeView({ runtime, status, acceptance, config, checking, manualChecking, onRefresh, onManualRefresh, onOpenOnboarding }: { runtime: DesktopRuntimeState | null; status: StackStatus; acceptance: DesktopAcceptanceState | null; config: PublicConfig; checking: boolean; manualChecking: boolean; onRefresh: () => Promise<void> | void; onManualRefresh: () => Promise<void> | void; onOpenOnboarding: () => void }) {
   const desktop = window.rosemewbotDesktop;
   const [activeAction, setActiveAction] = useState<DesktopAction | null>(null);
   const [feedback, setFeedback] = useState<{ ok: boolean; message: string; code?: string } | null>(null);
@@ -986,6 +1038,8 @@ function RuntimeView({ runtime, status, config, checking, onRefresh, onOpenOnboa
   const compatibilityUpdateAvailable = compatibility?.components.some((component) => (
     component.id !== "qq" && (component.status === "update-available" || component.status === "unknown")
   )) ?? false;
+  const qqSession = acceptance?.qqSession ?? emptyAcceptance.qqSession;
+  const qqPresentation = getQQSessionPresentation(qqSession);
   const stateCopy = !supported
     ? { label: "不支持此系统", tone: "error" }
     : needsSetup
@@ -993,10 +1047,41 @@ function RuntimeView({ runtime, status, config, checking, onRefresh, onOpenOnboa
       : needsQQ
         ? { label: "等待安装 QQ", tone: "warning" }
     : running
-      ? { label: "机器人运行中", tone: "ready" }
+      ? qqSession.state === "online" && acceptance?.onebotConnected
+        ? { label: "机器人在线", tone: "ready" }
+        : qqSession.state === "offline"
+          ? { label: "QQ 已掉线", tone: "error" }
+          : qqSession.state === "logged-out"
+            ? { label: "等待 QQ 登录", tone: "warning" }
+            : qqSession.state === "online"
+              ? { label: "等待 OneBot 连接", tone: "warning" }
+              : { label: "正在确认 QQ", tone: "warning" }
       : stackState === "partial"
         ? { label: "部分组件需处理", tone: "warning" }
         : { label: "已就绪，等待启动", tone: "neutral" };
+  const primaryActionCopy = activeAction === "install"
+    ? { eyebrow: "FIRST RUN", title: "正在准备运行环境……", detail: "Python、AstrBot 与 NapCat 正在就位" }
+    : activeAction === "install-qq"
+      ? { eyebrow: "FIRST RUN", title: "正在请 QQ 进屋……", detail: "请在打开的窗口中完成 QQ 安装" }
+      : activeAction === "start"
+        ? { eyebrow: "WAKING UP", title: "正在挨个叫醒机器人……", detail: "正在启动 AstrBot、NapCat 与 QQ" }
+        : running
+          ? qqSession.state === "online" && acceptance?.onebotConnected
+            ? { eyebrow: "ONLINE", title: "机器人正在值班", detail: `${qqSession.detail} · OneBot 已连接` }
+            : qqSession.state === "offline"
+              ? { eyebrow: "QQ OFFLINE", title: "QQ 已掉线，等它重新上线", detail: "NapCat 管理页仍可访问；请重新登录 QQ" }
+              : qqSession.state === "logged-out"
+                ? { eyebrow: "WAITING FOR QQ", title: "服务已醒，等 QQ 登录", detail: "打开 NapCat，用手机 QQ 扫码登录" }
+                : qqSession.state === "online"
+                  ? { eyebrow: "CONNECTING", title: "QQ 在线，正在接通 OneBot……", detail: qqSession.detail }
+                  : { eyebrow: "CHECKING QQ", title: "服务运行中，正在确认 QQ……", detail: qqSession.detail }
+          : needsSetup
+            ? { eyebrow: "FIRST RUN", title: "一键准备并运行", detail: "准备独立 Python、AstrBot 与 NapCat；QQ 安装需确认" }
+            : needsQQ
+              ? { eyebrow: "ONE MORE STEP", title: "安装 QQ 并运行", detail: "完成 QQ 官方安装后会自动启动机器人" }
+              : { eyebrow: "QUICK START", title: "一键运行机器人", detail: "启动 AstrBot、NapCat 与 QQ" };
+  const primaryActionDisabled = !supported || running || busy;
+  const primaryFlowBusy = activeAction === "install" || activeAction === "install-qq" || activeAction === "start";
 
   const runAction = async (action: DesktopAction) => {
     if (!desktop) return;
@@ -1037,6 +1122,10 @@ function RuntimeView({ runtime, status, config, checking, onRefresh, onOpenOnboa
     }
   };
 
+  const runPrimaryAction = () => (
+    needsSetup || needsQQ ? completeFirstSetup() : runAction("start")
+  );
+
   const loadLogs = async (service = logService) => {
     if (!desktop) return;
     setLogsLoading(true);
@@ -1051,7 +1140,10 @@ function RuntimeView({ runtime, status, config, checking, onRefresh, onOpenOnboa
   const serviceState = (id: "astrbot" | "napcat") => {
     const nativeService = runtime?.services.find((service) => service.id === id);
     const probe = status.services.find((service) => service.id === id);
-    const presentation = getRuntimeServicePresentation(nativeService, probe);
+    const base = getRuntimeServicePresentation(nativeService, probe);
+    const presentation = id === "napcat" && base.canOpen
+      ? { ...base, state: qqPresentation.state, label: qqPresentation.label, detail: `管理页可达 · ${qqPresentation.detail}` }
+      : base;
     return {
       running: nativeService?.running ?? false,
       installed: nativeService?.installed ?? false,
@@ -1074,21 +1166,11 @@ function RuntimeView({ runtime, status, config, checking, onRefresh, onOpenOnboa
           </div>
           <p>Windows 本机直接运行 AstrBot、NapCat 和 QQ。无需 Docker，也无需用户安装 Python 或输入命令。</p>
         </div>
-        <button className="button button-secondary" type="button" onClick={onRefresh} disabled={checking || busy}>
+        <button className="button button-secondary" type="button" onClick={() => void onManualRefresh()} disabled={checking || busy}>
           <RefreshCw size={15} className={checking ? "spin" : ""} />
           刷新状态
         </button>
       </section>
-
-      <button className="onboarding-cta" type="button" onClick={onOpenOnboarding}>
-        <span className="onboarding-cta-icon" aria-hidden="true"><Cable size={22} /></span>
-        <span className="onboarding-cta-copy">
-          <small>首次使用从这里开始</small>
-          <strong>打开安装向导</strong>
-          <span>跟随步骤完成 QQ 登录、OneBot 连接与模型配置</span>
-        </span>
-        <span className="onboarding-cta-action">开始配置 <ArrowRight size={17} /></span>
-      </button>
 
       {!supported && (
         <div className="desktop-alert">
@@ -1104,31 +1186,50 @@ function RuntimeView({ runtime, status, config, checking, onRefresh, onOpenOnboa
             <strong>{needsSetup ? "首次使用，一键完成本机准备" : "基础组件已就绪，还差 Windows QQ"}</strong>
             <p>{needsSetup ? "软件会把独立运行环境、AstrBot 和 NapCat 放入安装时选择的位置，不修改系统 Python。" : "点击后下载 QQ 官方安装程序；完成安装后会自动启动机器人。"}</p>
           </div>
-          <button className="button button-primary" type="button" disabled={busy} onClick={() => void completeFirstSetup()}>
-            {activeAction ? <RefreshCw size={15} className="spin" /> : <Power size={15} />}
-            {activeAction === "install" ? "准备组件中" : activeAction === "install-qq" ? "等待安装 QQ" : activeAction === "start" ? "正在启动" : needsSetup ? "一键完成首次准备" : "安装 QQ 并启动"}
-          </button>
-        </div>
-      )}
-
-      {progressActive && progress && (
-        <div className="install-progress" role="status" aria-live="polite">
-          <div><span>{progress.detail}</span><strong>{Math.round(progress.percent)}%</strong></div>
-          <div className="install-progress-track"><span style={{ width: `${Math.max(0, Math.min(100, progress.percent))}%` }} /></div>
         </div>
       )}
 
       <section className="runtime-actions" aria-label="运行操作">
-        <button className="runtime-action primary-action" type="button" disabled={unavailable || running || busy} onClick={() => void runAction("start")}>
-          <Power size={21} /><span><strong>{activeAction === "start" ? "正在启动" : "启动机器人"}</strong><small>AstrBot + NapCat + QQ</small></span>
+        <button className={`runtime-primary-action ${running ? "is-running" : ""} ${primaryFlowBusy ? "is-busy" : ""}`} type="button" disabled={primaryActionDisabled} onClick={() => void runPrimaryAction()}>
+          <span className="runtime-primary-icon" aria-hidden="true">
+            {primaryFlowBusy ? <RefreshCw size={24} className="spin" /> : running ? <BadgeCheck size={25} /> : <Power size={25} />}
+          </span>
+          <span className="runtime-primary-copy">
+            <small>{primaryActionCopy.eyebrow}</small>
+            <strong>{primaryActionCopy.title}</strong>
+            <span>{primaryActionCopy.detail}</span>
+          </span>
+          <span className="runtime-primary-hint">
+            {running ? "运行中" : primaryFlowBusy ? "请稍候" : "立即启动"}
+            {!running && !primaryFlowBusy && <ArrowRight size={18} />}
+          </span>
         </button>
-        <button className="runtime-action" type="button" disabled={!nativeReady || stackState === "stopped" || busy} onClick={() => void runAction("stop")}>
-          <Square size={18} /><span><strong>{activeAction === "stop" ? "正在停止" : "停止"}</strong><small>保留所有数据</small></span>
-        </button>
-        <button className="runtime-action" type="button" disabled={unavailable || stackState === "stopped" || busy} onClick={() => void runAction("restart")}>
-          <RotateCcw size={18} /><span><strong>{activeAction === "restart" ? "正在重启" : "重启"}</strong><small>重新加载配置</small></span>
-        </button>
+        <div className="runtime-secondary-actions">
+          <button className="runtime-action" type="button" disabled={!nativeReady || stackState === "stopped" || busy} onClick={() => void runAction("stop")}>
+            <Square size={18} /><span><strong>{activeAction === "stop" ? "正在让它们回窝……" : "停止"}</strong><small>保留所有数据</small></span>
+          </button>
+          <button className="runtime-action" type="button" disabled={unavailable || stackState === "stopped" || busy} onClick={() => void runAction("restart")}>
+            <RotateCcw size={18} /><span><strong>{activeAction === "restart" ? "正在重新叫醒……" : "重启"}</strong><small>重新加载配置</small></span>
+          </button>
+        </div>
       </section>
+
+      {progressActive && progress && (
+        <div className="install-progress" role="status" aria-live="polite">
+          <div className="install-progress-heading">
+            <span><strong>{getRuntimeProgressHeadline(progress)}</strong><small>{progress.detail}</small></span>
+            <b>{Math.round(progress.percent)}%</b>
+          </div>
+          <div className="install-progress-track"><span style={{ width: `${Math.max(0, Math.min(100, progress.percent))}%` }} /></div>
+        </div>
+      )}
+
+      {manualChecking && (
+        <div className="runtime-activity" role="status" aria-live="polite">
+          <RefreshCw size={17} className="spin" />
+          <span><strong>正在检查 AstrBot 有没有偷偷睡觉……</strong><small>正在确认本机进程与服务链路</small></span>
+        </div>
+      )}
 
       {feedback && (
         <div className={`action-feedback ${feedback.ok ? "feedback-ok" : "feedback-error"}`}>
@@ -1137,6 +1238,16 @@ function RuntimeView({ runtime, status, config, checking, onRefresh, onOpenOnboa
           {feedback.code === "QQ_DOWNLOAD_FAILED" && <button className="text-link" type="button" onClick={() => void desktop?.openQQDownload()}>打开 QQ 官网</button>}
         </div>
       )}
+
+      <button className="onboarding-cta" type="button" onClick={onOpenOnboarding}>
+        <span className="onboarding-cta-icon" aria-hidden="true"><Cable size={19} /></span>
+        <span className="onboarding-cta-copy">
+          <small>需要帮助？</small>
+          <strong>打开安装向导</strong>
+          <span>逐步完成 QQ 登录、OneBot 连接与模型配置</span>
+        </span>
+        <span className="onboarding-cta-action">查看步骤 <ArrowRight size={16} /></span>
+      </button>
 
       {compatibility && (
         <section className={`compatibility-center compatibility-${compatibility.overall}`} aria-label="组件兼容性、升级与回滚中心">
@@ -1524,7 +1635,7 @@ function DiagnosticsView({ status, config, onRefresh }: { status: StackStatus; c
             <div><dt>反向 WS</dt><dd><code>{config.onebotUrl}</code></dd></div>
           </dl>
           <div className="reference-divider" />
-          <p>系统每 15 秒检查一次运行状态。仅在机器人原本应当运行且确认异常后，自动恢复才会重启组件。</p>
+          <p>窗口在前台时每 5 秒确认一次 QQ 在线与运行状态；退到后台后降为每 15 秒。仅在机器人原本应当运行且确认异常后，自动恢复才会重启组件。</p>
           <div className="command-line compact"><code>本机端口 · 自动验收 · 安全恢复</code></div>
         </aside>
       </div>
@@ -1540,6 +1651,8 @@ export function App() {
   const [runtime, setRuntime] = useState<DesktopRuntimeState | null>(null);
   const [acceptance, setAcceptance] = useState<DesktopAcceptanceState | null>(desktop ? emptyAcceptance : null);
   const [checking, setChecking] = useState(true);
+  const [manualChecking, setManualChecking] = useState(false);
+  const refreshPromiseRef = useRef<Promise<void> | null>(null);
   const [mobileNav, setMobileNav] = useState(false);
   const { theme, setTheme } = useThemePreference();
   const { fontScale, setFontScale } = useFontScalePreference();
@@ -1560,22 +1673,41 @@ export function App() {
     return () => unsubscribe?.();
   }, []);
 
-  const refresh = useCallback(async () => {
-    setChecking(true);
-    try {
-      if (window.rosemewbotDesktop) {
-        const next = await window.rosemewbotDesktop.getStatus();
-        setStatus(next.stack);
-        setRuntime(next.runtime);
-        setAcceptance(next.acceptance);
-        return;
+  const refresh = useCallback((silent = false) => {
+    if (refreshPromiseRef.current) return refreshPromiseRef.current;
+    if (!silent) setChecking(true);
+    const request = (async () => {
+      try {
+        if (window.rosemewbotDesktop) {
+          const next = await window.rosemewbotDesktop.getStatus();
+          setStatus(next.stack);
+          setRuntime(next.runtime);
+          setAcceptance(next.acceptance);
+          return;
+        }
+        const response = await fetch("/api/status", { cache: "no-store" });
+        if (response.ok) setStatus(await response.json() as StackStatus);
+      } catch {
+        // Keep the last known state; the next scheduled probe will try again.
+      } finally {
+        if (!silent) setChecking(false);
       }
-      const response = await fetch("/api/status", { cache: "no-store" });
-      if (response.ok) setStatus(await response.json() as StackStatus);
-    } finally {
-      setChecking(false);
-    }
+    })();
+    refreshPromiseRef.current = request;
+    void request.finally(() => {
+      if (refreshPromiseRef.current === request) refreshPromiseRef.current = null;
+    });
+    return request;
   }, []);
+
+  const refreshManually = useCallback(async () => {
+    setManualChecking(true);
+    try {
+      await refresh();
+    } finally {
+      setManualChecking(false);
+    }
+  }, [refresh]);
 
   useEffect(() => {
     const configRequest = window.rosemewbotDesktop
@@ -1599,8 +1731,17 @@ export function App() {
       })
       .catch(() => setConfig(fallbackConfig));
     void refresh();
-    const timer = window.setInterval(() => void refresh(), 15_000);
-    return () => window.clearInterval(timer);
+    let timer = window.setInterval(() => void refresh(true), document.hidden ? 15_000 : 5_000);
+    const handleVisibilityChange = () => {
+      window.clearInterval(timer);
+      timer = window.setInterval(() => void refresh(true), document.hidden ? 15_000 : 5_000);
+      if (!document.hidden) void refresh(true);
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, [refresh]);
 
   return (
@@ -1608,11 +1749,11 @@ export function App() {
       <Sidebar view={view} onViewChange={setView} desktop={desktop} />
       {mobileNav && <div className="mobile-sidebar-backdrop" onClick={() => setMobileNav(false)}><div onClick={(event) => event.stopPropagation()}><Sidebar view={view} onViewChange={setView} desktop={desktop} onClose={() => setMobileNav(false)} /></div></div>}
       <main>
-        <Topbar status={status} acceptance={acceptance} runtime={runtime} checking={checking} onRefresh={refresh} onMenu={() => setMobileNav(true)} />
+        <Topbar status={status} acceptance={acceptance} runtime={runtime} checking={checking} onRefresh={() => void refreshManually()} onMenu={() => setMobileNav(true)} />
         <div className={`content-wrap ${view === "napcat" || view === "astrbot" ? "embedded-content-wrap" : ""}`}>
-          {view === "runtime" && <RuntimeView runtime={runtime} status={status} config={config} checking={checking} onRefresh={refresh} onOpenOnboarding={() => setView("onboarding")} />}
-          {view === "napcat" && <EmbeddedPanelWorkspace panel="napcat" runtime={runtime} suspended={mobileNav} onOpenRuntime={() => setView("runtime")} />}
-          {view === "astrbot" && <EmbeddedPanelWorkspace panel="astrbot" runtime={runtime} suspended={mobileNav} onOpenRuntime={() => setView("runtime")} />}
+          {view === "runtime" && <RuntimeView runtime={runtime} status={status} acceptance={acceptance} config={config} checking={checking} manualChecking={manualChecking} onRefresh={refresh} onManualRefresh={refreshManually} onOpenOnboarding={() => setView("onboarding")} />}
+          {view === "napcat" && <EmbeddedPanelWorkspace panel="napcat" runtime={runtime} acceptance={acceptance} suspended={mobileNav} onOpenRuntime={() => setView("runtime")} />}
+          {view === "astrbot" && <EmbeddedPanelWorkspace panel="astrbot" runtime={runtime} acceptance={acceptance} suspended={mobileNav} onOpenRuntime={() => setView("runtime")} />}
           {view === "onboarding" && <Onboarding config={config} status={status} acceptance={acceptance} checking={checking} onRefresh={refresh} completed={completed} onToggle={toggle} />}
           {view === "status" && <StatusView status={status} config={config} acceptance={acceptance} runtime={runtime} checking={checking} onRefresh={refresh} />}
           {view === "diagnostics" && <DiagnosticsView status={status} config={config} onRefresh={refresh} />}

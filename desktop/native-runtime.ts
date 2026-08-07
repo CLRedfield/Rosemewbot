@@ -23,6 +23,7 @@ import extract from "extract-zip";
 
 import componentLock from "../config/components-lock.json";
 import { collectStatus } from "../src/server/probe.js";
+import { NapCatStatusClient, type QQSessionStatus } from "./napcat-status.js";
 
 export type NativeAction = "install" | "install-qq" | "start" | "stop" | "restart" | "update" | "repair" | "rollback";
 export type NativeServiceId = "astrbot" | "napcat";
@@ -41,6 +42,7 @@ export interface NativeAcceptanceState {
   componentsReady: boolean;
   servicesReady: boolean;
   qqInstalled: boolean;
+  qqSession: QQSessionStatus;
   qqLoginDetected: boolean;
   qqAccount: string | null;
   onebotConfigured: boolean;
@@ -588,6 +590,7 @@ export class NativeRuntimeManager {
   private unhealthyChecks = 0;
   private wasHealthy = false;
   private recoveryAttempted = false;
+  private readonly napcatStatus = new NapCatStatusClient();
 
   constructor(userDataDir: string, onProgress: (progress: InstallProgress) => void = () => undefined) {
     this.runtimeDir = path.join(userDataDir, "native-runtime");
@@ -1536,14 +1539,6 @@ export class NativeRuntimeManager {
     }
   }
 
-  private async getQQAccount() {
-    try {
-      return findNapCatAccountFromNames(await readdir(path.join(this.napcatRoot, "config")));
-    } catch {
-      return null;
-    }
-  }
-
   private async getAstrBotInspection() {
     const configPath = path.join(this.astrbotRoot, "data", "cmd_config.json");
     const config = await readJson<Record<string, unknown>>(configPath, {});
@@ -1551,9 +1546,24 @@ export class NativeRuntimeManager {
   }
 
   private async getAcceptance(runtime: NativeRuntimeState, stack: Awaited<ReturnType<typeof collectStatus>>): Promise<NativeAcceptanceState> {
-    const [connections, qqAccount, astrbot] = await Promise.all([
+    const napcatService = stack.services.find((service) => service.id === "napcat");
+    const napcatRunning = runtime.services.find((service) => service.id === "napcat")?.running === true;
+    const qqSessionPromise: Promise<QQSessionStatus> = !napcatRunning
+      ? Promise.resolve({ state: "unknown", account: null, nickname: null, checkedAt: new Date().toISOString(), detail: "NapCat 尚未运行" })
+      : napcatService?.state !== "ready"
+        ? Promise.resolve({ state: "unknown", account: null, nickname: null, checkedAt: new Date().toISOString(), detail: "NapCat 管理页不可达" })
+        : this.getCredentials()
+          .then((credentials) => this.napcatStatus.getSession(credentials.napcatToken))
+          .catch((error: unknown) => ({
+            state: "unknown" as const,
+            account: null,
+            nickname: null,
+            checkedAt: new Date().toISOString(),
+            detail: error instanceof Error ? error.message : "无法读取 NapCat 登录状态",
+          }));
+    const [connections, qqSession, astrbot] = await Promise.all([
       this.getTcpConnections(),
-      this.getQQAccount(),
+      qqSessionPromise,
       this.getAstrBotInspection(),
     ]);
     const servicesReady = ["astrbot", "napcat"].every((id) => stack.services.find((service) => service.id === id)?.state === "ready");
@@ -1565,8 +1575,9 @@ export class NativeRuntimeManager {
       componentsReady: runtime.nativeReady,
       servicesReady,
       qqInstalled: runtime.qqInstalled,
-      qqLoginDetected: Boolean(qqAccount),
-      qqAccount,
+      qqSession,
+      qqLoginDetected: qqSession.state === "online",
+      qqAccount: qqSession.account,
       onebotConfigured: astrbot.onebotConfigured,
       onebotConnected,
       modelConfigured: astrbot.modelConfigured,
@@ -1625,15 +1636,19 @@ export class NativeRuntimeManager {
         });
     }
 
-    add(acceptance.qqLoginDetected
-      ? { id: "qq-login", title: "QQ 登录", severity: "pass", detail: `已检测到机器人账号 ${acceptance.qqAccount}。`, suggestion: null }
-      : { id: "qq-login", title: "QQ 登录", severity: acceptance.servicesReady ? "warning" : "error", detail: "尚未发现已登录的机器人 QQ。", suggestion: "打开 NapCat，使用手机 QQ 扫码登录独立测试账号。", action: "open-napcat", actionLabel: "打开 NapCat" });
+    add(acceptance.qqSession.state === "online"
+      ? { id: "qq-login", title: "QQ 实时状态", severity: "pass", detail: `${acceptance.qqSession.detail}。`, suggestion: null }
+      : acceptance.qqSession.state === "offline"
+        ? { id: "qq-login", title: "QQ 实时状态", severity: "error", detail: `${acceptance.qqSession.detail}。`, suggestion: "打开 NapCat 重新登录 QQ。", action: "open-napcat", actionLabel: "打开 NapCat" }
+        : acceptance.qqSession.state === "logged-out"
+          ? { id: "qq-login", title: "QQ 实时状态", severity: "warning", detail: "NapCat 管理页可达，但 QQ 尚未登录。", suggestion: "打开 NapCat，使用手机 QQ 扫码登录独立测试账号。", action: "open-napcat", actionLabel: "打开 NapCat" }
+          : { id: "qq-login", title: "QQ 实时状态", severity: acceptance.servicesReady ? "warning" : "error", detail: `暂时无法确认 QQ 是否在线：${acceptance.qqSession.detail}。`, suggestion: "确认 NapCat 正常运行并检查 WebUI Token。", action: "open-napcat", actionLabel: "打开 NapCat" });
     add(acceptance.onebotConfigured && acceptance.onebotConnected
       ? { id: "onebot", title: "OneBot 通道", severity: "pass", detail: "NapCat 已与 AstrBot 建立本机 WebSocket 连接。", suggestion: null }
       : {
         id: "onebot",
         title: "OneBot 通道",
-        severity: acceptance.qqLoginDetected ? "error" : "warning",
+        severity: acceptance.qqSession.state === "online" ? "error" : "warning",
         detail: acceptance.onebotConfigured ? "AstrBot 已配置 6199 端口，但尚无真实客户端连接。" : "AstrBot 的 OneBot v11 配置不完整。",
         suggestion: acceptance.onebotConfigured ? "确认 QQ 已登录，随后重启机器人。" : "执行组件修复以恢复预设连接。",
         action: acceptance.onebotConfigured ? "restart" : "repair",
@@ -1688,11 +1703,10 @@ export class NativeRuntimeManager {
     const { runtime, stack, acceptance } = await this.getStatus();
     const servicesHealthy = ["astrbot", "napcat"].every((id) => stack.services.find((service) => service.id === id)?.state === "ready");
     const processesHealthy = runtime.stackState === "running";
-    if (processesHealthy && servicesHealthy && (!this.wasHealthy || acceptance.onebotConnected)) {
-      if (acceptance.onebotConnected) {
-        this.wasHealthy = true;
-        this.recoveryAttempted = false;
-      }
+    const botConnected = acceptance.qqSession.state === "online" && acceptance.onebotConnected;
+    if (processesHealthy && servicesHealthy && botConnected) {
+      this.wasHealthy = true;
+      this.recoveryAttempted = false;
       this.unhealthyChecks = 0;
       return { recovered: false, message: "运行正常" };
     }

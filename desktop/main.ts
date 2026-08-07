@@ -231,8 +231,18 @@ async function refreshTray() {
   const { runtime, acceptance } = await runtimeManager.getStatus();
   const preferences = await runtimeManager.getPreferences();
   const running = runtime.stackState === "running";
-  const connected = acceptance.onebotConnected;
-  const statusLabel = connected ? "机器人在线" : running ? "机器人运行中，等待链路" : "机器人已停止";
+  const connected = acceptance.qqSession.state === "online" && acceptance.onebotConnected;
+  const statusLabel = connected
+    ? "机器人在线"
+    : !running
+      ? "机器人已停止"
+      : acceptance.qqSession.state === "offline"
+        ? "QQ 已掉线"
+        : acceptance.qqSession.state === "logged-out"
+          ? "等待 QQ 登录"
+          : acceptance.qqSession.state === "unknown"
+            ? "正在确认 QQ 状态"
+            : "QQ 在线，等待 OneBot 链路";
   tray.setToolTip(`Rosemewbot · ${statusLabel}`);
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: statusLabel, enabled: false },

@@ -103,10 +103,21 @@ export interface DesktopPreferences {
   autoRecovery: boolean;
 }
 
+export type DesktopQQSessionState = "online" | "offline" | "logged-out" | "unknown";
+
+export interface DesktopQQSessionStatus {
+  state: DesktopQQSessionState;
+  account: string | null;
+  nickname: string | null;
+  checkedAt: string;
+  detail: string;
+}
+
 export interface DesktopAcceptanceState {
   componentsReady: boolean;
   servicesReady: boolean;
   qqInstalled: boolean;
+  qqSession: DesktopQQSessionStatus;
   qqLoginDetected: boolean;
   qqAccount: string | null;
   onebotConfigured: boolean;

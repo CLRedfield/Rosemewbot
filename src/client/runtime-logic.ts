@@ -1,5 +1,7 @@
 import type {
+  DesktopQQSessionStatus,
   DesktopAction,
+  DesktopInstallProgress,
   DesktopRuntimeService,
   ServiceProbe,
   ServiceState,
@@ -15,11 +17,71 @@ export function createFirstSetupPlan(nativeReady: boolean, qqInstalled: boolean)
   ];
 }
 
+export function getRuntimeProgressHeadline(progress: DesktopInstallProgress): string {
+  if (progress.stage === "error") return "猫窝出了点状况……";
+  if (progress.stage === "complete") return "都收拾好了。";
+
+  switch (progress.component) {
+    case "astrbot":
+      return progress.stage === "configuring"
+        ? "正在把 AstrBot 安顿好……"
+        : "正在叼回 Python……";
+    case "napcat":
+      return "正在给 NapCat 铺猫窝……";
+    case "qq":
+      return progress.stage === "waiting"
+        ? "QQ 已到门口，等你开门……"
+        : "正在请 QQ 进屋……";
+    case "runtime":
+      return "正在整理机器人的小窝……";
+  }
+}
+
 export interface RuntimeServicePresentation {
   state: ServiceState;
   label: string;
   detail: string;
   canOpen: boolean;
+}
+
+export interface QQSessionPresentation {
+  state: ServiceState;
+  label: string;
+  detail: string;
+  online: boolean;
+}
+
+export function getQQSessionPresentation(session: DesktopQQSessionStatus): QQSessionPresentation {
+  switch (session.state) {
+    case "online":
+      return {
+        state: "ready",
+        label: "QQ 在线",
+        detail: session.detail,
+        online: true,
+      };
+    case "offline":
+      return {
+        state: "unreachable",
+        label: "QQ 已掉线",
+        detail: session.detail,
+        online: false,
+      };
+    case "logged-out":
+      return {
+        state: "waiting",
+        label: "QQ 未登录",
+        detail: session.detail,
+        online: false,
+      };
+    case "unknown":
+      return {
+        state: "waiting",
+        label: "状态待确认",
+        detail: session.detail,
+        online: false,
+      };
+  }
 }
 
 export function getRuntimeServicePresentation(
