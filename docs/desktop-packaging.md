@@ -134,7 +134,7 @@ npm run desktop:pack
 构建产物：
 
 ```text
-release/Rosemewbot-Setup-0.5.8-x64.exe
+release/Rosemewbot-Setup-0.5.9-x64.exe
 release/win-unpacked/Rosemewbot.exe
 ```
 

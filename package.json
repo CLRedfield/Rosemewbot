@@ -1,9 +1,10 @@
 {
   "name": "rosemewbot",
-  "version": "0.5.8",
+  "version": "0.5.9",
   "description": "Windows-native AstrBot and NapCat QQ assistant with one-click setup.",
   "productName": "Rosemewbot",
   "author": "Rosemewbot",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "main": "dist-electron/main.cjs",
@@ -49,6 +50,7 @@
   "build": {
     "appId": "com.rosemewbot.desktop",
     "productName": "Rosemewbot",
+    "copyright": "Copyright © 2026 Rosepineus",
     "asar": true,
     "electronDist": "node_modules/electron/dist",
     "directories": {
@@ -59,6 +61,7 @@
       "dist-electron/**/*",
       "config/components-lock.json",
       "assets/icon.png",
+      "LICENSE",
       "package.json"
     ],
     "win": {

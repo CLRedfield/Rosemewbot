@@ -9,7 +9,7 @@
 构建产物：
 
 ```text
-release/Rosemewbot-Setup-0.5.8-x64.exe
+release/Rosemewbot-Setup-0.5.9-x64.exe
 ```
 
 用户流程只有三步：
@@ -104,3 +104,9 @@ npm run desktop:dir
 - 版本化知识库、文档检索、群聊日报和多租户计费。
 
 本阶段验收目标是：在 Windows 上完成“QQ 收到消息 → AstrBot 调用模型 → 回复 QQ”，并能从统一桌面界面配置和排查整条链路。
+
+## 许可证
+
+自 v0.5.9 起，Rosemewbot 采用 [MIT License](LICENSE) 授权。
+
+Copyright (c) 2026 Rosepineus
