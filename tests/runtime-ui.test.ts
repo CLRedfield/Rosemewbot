@@ -9,7 +9,7 @@ const stoppedService: DesktopRuntimeService = {
   running: false,
   state: "stopped",
   status: "已安装，尚未启动",
-  version: "4.27.1",
+  version: "4.27.2",
   startedAt: null,
 };
 

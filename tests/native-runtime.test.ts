@@ -146,7 +146,7 @@ describe("Windows native runtime configuration", () => {
   });
 
   it("evaluates locked component and QQ versions", () => {
-    expect(getComponentCompatibilityStatus("AstrBot v4.27.1", COMPONENT_POLICY.astrbot.version, true)).toBe("compatible");
+    expect(getComponentCompatibilityStatus("AstrBot v4.27.2", COMPONENT_POLICY.astrbot.version, true)).toBe("compatible");
     expect(getComponentCompatibilityStatus("4.26.0", COMPONENT_POLICY.astrbot.version, true)).toBe("update-available");
     expect(getComponentCompatibilityStatus(null, COMPONENT_POLICY.astrbot.version, true)).toBe("unknown");
     expect(parseQQDisplayVersion("    DisplayVersion    REG_SZ    9.9.26.44343")).toBe("9.9.26.44343");

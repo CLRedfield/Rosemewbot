@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "policyVersion": "2026.08.05-stable.1",
+  "policyVersion": "2026.08.10-stable.1",
   "channel": "stable",
-  "testedAt": "2026-08-05",
+  "testedAt": "2026-08-10",
   "python": {
     "version": "3.12"
   },
@@ -14,7 +14,7 @@
   },
   "astrbot": {
     "package": "astrbot",
-    "version": "4.27.1"
+    "version": "4.27.2"
   },
   "napcat": {
     "repository": "NapNeko/NapCatQQ",
