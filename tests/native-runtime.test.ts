@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   COMPONENT_POLICY,
   NativeRuntimeManager,
+  buildNapCatLaunchArgs,
   buildNapCatOneBotConfig,
   buildNapCatWebUiConfig,
   findNapCatAccountFromNames,
@@ -14,6 +15,7 @@ import {
   hasManagedNapCatConnection,
   inspectAstrBotConfig,
   isValidDashboardPassword,
+  isValidQQAccount,
   parseQQDisplayVersion,
   parseNetstatConnections,
   parseQQInstallPath,
@@ -40,6 +42,17 @@ describe("Windows native runtime configuration", () => {
   it("reads an unquoted QQ uninstall path containing spaces", () => {
     const output = "    UninstallString    REG_SZ    C:\\Program Files\\Tencent\\QQNT\\Uninstall.exe /S";
     expect(parseQQInstallPath(output)).toBe(path.join("C:\\Program Files\\Tencent\\QQNT", "QQ.exe"));
+  });
+
+  it("adds a validated QQ account to NapCat's official quick-login arguments", () => {
+    expect(buildNapCatLaunchArgs("C:\\QQ\\QQ.exe", "C:\\NapCat\\Hook.dll", "123456789")).toEqual([
+      "C:\\QQ\\QQ.exe",
+      "C:\\NapCat\\Hook.dll",
+      "123456789",
+    ]);
+    expect(buildNapCatLaunchArgs("C:\\QQ\\QQ.exe", "C:\\NapCat\\Hook.dll", null)).toHaveLength(2);
+    expect(isValidQQAccount("123456789")).toBe(true);
+    expect(isValidQQAccount("1234-invalid")).toBe(false);
   });
 
   it("keeps the NapCat WebUI local and protected by a token", () => {
@@ -85,6 +98,21 @@ describe("Windows native runtime configuration", () => {
   it("detects the QQ account from NapCat account-specific config names", () => {
     expect(findNapCatAccountFromNames(["napcat.json", "onebot11.json", "onebot11_123456789.json"])).toBe("123456789");
     expect(findNapCatAccountFromNames(["napcat.json", "onebot11.json"])).toBeNull();
+  });
+
+  it("persists the selected quick-login account without storing a password", async () => {
+    const userDataDir = await mkdtemp(path.join(os.tmpdir(), "rosemewbot-preferences-"));
+    temporaryDirectories.push(userDataDir);
+    const manager = new NativeRuntimeManager(userDataDir);
+    await manager.initialize();
+
+    await expect(manager.setPreferences({ autoLoginAccount: "123456789" })).resolves.toMatchObject({
+      autoLoginAccount: "123456789",
+    });
+    await expect(manager.getPreferences()).resolves.toMatchObject({ autoLoginAccount: "123456789" });
+    const stored = JSON.parse(await readFile(path.join(manager.runtimeDir, "preferences.json"), "utf8"));
+    expect(stored).toMatchObject({ autoLoginAccount: "123456789" });
+    expect(JSON.stringify(stored)).not.toMatch(/password/i);
   });
 
   it("automatically recognizes OneBot and the default AstrBot model", () => {

@@ -49,6 +49,7 @@ import type {
   DesktopDiagnosticReport,
   DesktopInstallProgress,
   DesktopPreferences,
+  DesktopQQLoginAccount,
   DesktopRuntimeState,
   EmbeddedPanelBounds,
   EmbeddedPanelId,
@@ -1361,16 +1362,57 @@ function SettingsView({
     launchAtLogin: false,
     startBotAtLogin: false,
     autoRecovery: true,
+    autoLoginAccount: null,
   });
   const [appVersion, setAppVersion] = useState("读取中");
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateResult, setUpdateResult] = useState<DesktopAppUpdateResult | null>(null);
   const [uninstalling, setUninstalling] = useState(false);
   const [actionFeedback, setActionFeedback] = useState<{ ok: boolean; message: string } | null>(null);
+  const [qqAccounts, setQQAccounts] = useState<DesktopQQLoginAccount[]>([]);
+  const [accountListLoading, setAccountListLoading] = useState(false);
+  const [accountListLoaded, setAccountListLoaded] = useState(false);
+  const [accountListError, setAccountListError] = useState<string | null>(null);
+  const napcatRunning = runtime?.services.some((service) => service.id === "napcat" && service.running) === true;
+  const selectableQQAccounts = useMemo(() => {
+    const selected = preferences.autoLoginAccount;
+    if (!selected || qqAccounts.some((item) => item.account === selected)) return qqAccounts;
+    return [{ account: selected, nickname: "已保存的账号", avatarUrl: null }, ...qqAccounts];
+  }, [preferences.autoLoginAccount, qqAccounts]);
+
+  const refreshQQAccounts = useCallback(async () => {
+    if (!desktop) return;
+    if (!napcatRunning) {
+      setAccountListError("请先启动机器人，让 NapCat 读取本机可快速登录的 QQ");
+      setAccountListLoaded(true);
+      return;
+    }
+    setAccountListLoading(true);
+    setAccountListError(null);
+    try {
+      const accounts = await desktop.getQQLoginAccounts();
+      setQQAccounts(accounts);
+      setAccountListLoaded(true);
+      if (accounts.length === 0) setAccountListError("没有发现可快速登录的账号，请先在 NapCat 中完成一次登录");
+    } catch (error) {
+      setAccountListLoaded(true);
+      setAccountListError(error instanceof Error ? error.message : "无法读取 NapCat 快速登录账号");
+    } finally {
+      setAccountListLoading(false);
+    }
+  }, [desktop, napcatRunning]);
 
   useEffect(() => {
     if (runtime?.preferences) setPreferences(runtime.preferences);
   }, [runtime?.preferences]);
+
+  useEffect(() => {
+    if (!napcatRunning) {
+      setAccountListLoaded(false);
+      return;
+    }
+    if (!accountListLoaded) void refreshQQAccounts();
+  }, [accountListLoaded, napcatRunning, refreshQQAccounts]);
 
   useEffect(() => {
     if (!desktop) {
@@ -1496,6 +1538,32 @@ function SettingsView({
             <div className="settings-panel">
               <PreferenceToggle label="开机启动控制台" detail="登录 Windows 后在托盘运行" checked={preferences.launchAtLogin} onChange={(checked) => void updatePreference({ launchAtLogin: checked })} />
               <PreferenceToggle label="开机后启动机器人" detail="自动启动 AstrBot、NapCat 与 QQ" checked={preferences.startBotAtLogin} disabled={!preferences.launchAtLogin} onChange={(checked) => void updatePreference({ startBotAtLogin: checked })} />
+              <div className="setting-row auto-login-setting">
+                <div className="setting-copy">
+                  <strong>自动登录 QQ</strong>
+                  <small>{accountListError ?? (preferences.autoLoginAccount
+                    ? `启动时尝试快速登录 QQ ${preferences.autoLoginAccount}；会话失效时仍需扫码`
+                    : "选择 NapCat 已记录的账号；不会保存 QQ 密码")}</small>
+                </div>
+                <div className="account-select-control">
+                  <select
+                    aria-label="自动登录 QQ"
+                    value={preferences.autoLoginAccount ?? ""}
+                    disabled={accountListLoading}
+                    onChange={(event) => void updatePreference({ autoLoginAccount: event.target.value || null })}
+                  >
+                    <option value="">不指定，手动登录</option>
+                    {selectableQQAccounts.map((item) => (
+                      <option key={item.account} value={item.account}>
+                        {item.nickname ? `${item.nickname} (${item.account})` : `QQ ${item.account}`}
+                      </option>
+                    ))}
+                  </select>
+                  <button className="account-refresh-button" type="button" title="刷新 NapCat 账号" aria-label="刷新 NapCat 账号" disabled={accountListLoading} onClick={() => void refreshQQAccounts()}>
+                    <RefreshCw size={15} className={accountListLoading ? "spin" : ""} />
+                  </button>
+                </div>
+              </div>
               <PreferenceToggle label="掉线自动恢复" detail="确认异常后自动重启组件" checked={preferences.autoRecovery} onChange={(checked) => void updatePreference({ autoRecovery: checked })} />
             </div>
           </section>

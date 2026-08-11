@@ -753,6 +753,22 @@ main { min-width: 0; }
 .settings-panel .preference-row { min-height: 68px; padding-inline: 4px; }
 .settings-panel .preference-row strong { font-size: calc(11px * var(--font-scale)); }
 .settings-panel .preference-row small { font-size: calc(9px * var(--font-scale)); }
+.account-select-control { width: 270px; flex: 0 0 270px; display: grid; grid-template-columns: minmax(0, 1fr) 38px; gap: 6px; }
+.account-select-control select,
+.account-refresh-button {
+  min-height: 38px;
+  color: #aeb9bd;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: #0d1315;
+}
+.account-select-control select { min-width: 0; padding: 0 32px 0 10px; font: inherit; font-size: calc(9px * var(--font-scale)); cursor: pointer; }
+.account-select-control select:focus-visible,
+.account-refresh-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.account-select-control select:disabled,
+.account-refresh-button:disabled { opacity: .5; cursor: wait; }
+.account-refresh-button { display: inline-flex; align-items: center; justify-content: center; padding: 0; cursor: pointer; }
+.account-refresh-button:hover:not(:disabled) { color: var(--accent); border-color: #386050; background: #10201a; }
 .settings-feedback {
   min-height: 58px;
   display: grid;
@@ -1238,6 +1254,9 @@ main { min-width: 0; }
 :root[data-theme="light"] .font-scale-options button:hover { color: #1d2a24; border-color: #a8b3ad; background: #ffffff; }
 :root[data-theme="light"] .font-scale-options button.active { color: #126c52; border-color: #91b7a6; background: #e5f0eb; }
 :root[data-theme="light"] .font-scale-options button.active small { color: #4e806d; }
+:root[data-theme="light"] .account-select-control select,
+:root[data-theme="light"] .account-refresh-button { color: #53615b; background: #ffffff; }
+:root[data-theme="light"] .account-refresh-button:hover:not(:disabled) { color: #126c52; border-color: #91b7a6; background: #e5f0eb; }
 :root[data-theme="light"] .settings-feedback { background: #f8faf7; }
 :root[data-theme="light"] .danger-settings-section .settings-section-heading h2,
 :root[data-theme="light"] .danger-setting-row .setting-copy strong { color: #8f3c35; }
@@ -1428,7 +1447,7 @@ main { min-width: 0; }
   .diagnostic-result .button { grid-column: 2; }
   .setting-row { align-items: flex-start; flex-direction: column; gap: 14px; padding-block: 18px; }
   .setting-row > .button { align-self: stretch; justify-content: center; }
-  .setting-options, .font-scale-options { width: 100%; flex-basis: auto; }
+  .setting-options, .font-scale-options, .account-select-control { width: 100%; flex-basis: auto; }
   .settings-feedback { grid-template-columns: 22px minmax(0, 1fr); padding-block: 14px; }
   .settings-feedback .button { grid-column: 2; justify-self: start; }
   .action-row { align-items: stretch; }

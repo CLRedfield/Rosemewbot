@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld("rosemewbotDesktop", {
   openAppUpdatePage: () => ipcRenderer.invoke("desktop:open-app-update-page"),
   runAction: (action: NativeAction) => ipcRenderer.invoke("desktop:run-action", action),
   getPreferences: () => ipcRenderer.invoke("desktop:get-preferences"),
+  getQQLoginAccounts: () => ipcRenderer.invoke("desktop:get-qq-login-accounts"),
   setPreferences: (preferences: Partial<NativePreferences>) => ipcRenderer.invoke("desktop:set-preferences", preferences),
   runDiagnostics: () => ipcRenderer.invoke("desktop:run-diagnostics"),
   getLogs: (service: "astrbot" | "napcat") => ipcRenderer.invoke("desktop:get-logs", service),

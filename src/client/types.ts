@@ -101,6 +101,13 @@ export interface DesktopPreferences {
   launchAtLogin: boolean;
   startBotAtLogin: boolean;
   autoRecovery: boolean;
+  autoLoginAccount: string | null;
+}
+
+export interface DesktopQQLoginAccount {
+  account: string;
+  nickname: string | null;
+  avatarUrl: string | null;
 }
 
 export type DesktopQQSessionState = "online" | "offline" | "logged-out" | "unknown";

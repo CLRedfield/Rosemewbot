@@ -23,7 +23,7 @@ import extract from "extract-zip";
 
 import componentLock from "../config/components-lock.json";
 import { collectStatus } from "../src/server/probe.js";
-import { NapCatStatusClient, type QQSessionStatus } from "./napcat-status.js";
+import { NapCatStatusClient, type NapCatQuickLoginAccount, type QQSessionStatus } from "./napcat-status.js";
 
 export type NativeAction = "install" | "install-qq" | "start" | "stop" | "restart" | "update" | "repair" | "rollback";
 export type NativeServiceId = "astrbot" | "napcat";
@@ -32,6 +32,7 @@ export interface NativePreferences {
   launchAtLogin: boolean;
   startBotAtLogin: boolean;
   autoRecovery: boolean;
+  autoLoginAccount: string | null;
 }
 
 interface StoredPreferences extends NativePreferences {
@@ -218,7 +219,7 @@ export const COMPONENT_POLICY = componentLock as {
 };
 const githubHeaders = {
   Accept: "application/vnd.github+json",
-  "User-Agent": "Rosemewbot-Native/0.5.5",
+  "User-Agent": "Rosemewbot-Native/0.6.0",
   "X-GitHub-Api-Version": "2022-11-28",
 };
 const managedNapCatConnectionName = "Rosemewbot · AstrBot";
@@ -230,6 +231,7 @@ const defaultPreferences: StoredPreferences = {
   launchAtLogin: false,
   startBotAtLogin: false,
   autoRecovery: true,
+  autoLoginAccount: null,
   desiredRunning: false,
 };
 
@@ -257,6 +259,19 @@ export function parseQQInstallPath(registryOutput: string) {
   const value = line.replace(/^.*?REG_SZ\s+/i, "").trim();
   const uninstallExecutable = normalizeUninstallPath(value);
   return path.join(path.dirname(uninstallExecutable), "QQ.exe");
+}
+
+export function isValidQQAccount(value: unknown): value is string {
+  return typeof value === "string" && /^[1-9]\d{4,11}$/.test(value.trim());
+}
+
+export function normalizeQQAccount(value: unknown) {
+  return isValidQQAccount(value) ? value.trim() : null;
+}
+
+export function buildNapCatLaunchArgs(qqPath: string, hookPath: string, autoLoginAccount: string | null) {
+  const account = normalizeQQAccount(autoLoginAccount);
+  return account ? [qqPath, hookPath, account] : [qqPath, hookPath];
 }
 
 export function buildNapCatWebUiConfig(token: string) {
@@ -657,6 +672,7 @@ export class NativeRuntimeManager {
       launchAtLogin: typeof stored.launchAtLogin === "boolean" ? stored.launchAtLogin : defaultPreferences.launchAtLogin,
       startBotAtLogin: typeof stored.startBotAtLogin === "boolean" ? stored.startBotAtLogin : defaultPreferences.startBotAtLogin,
       autoRecovery: typeof stored.autoRecovery === "boolean" ? stored.autoRecovery : defaultPreferences.autoRecovery,
+      autoLoginAccount: normalizeQQAccount(stored.autoLoginAccount),
       desiredRunning: typeof stored.desiredRunning === "boolean" ? stored.desiredRunning : defaultPreferences.desiredRunning,
     };
     if (JSON.stringify(stored) !== JSON.stringify(preferences)) await writeJson(this.preferencesPath, preferences);
@@ -672,6 +688,9 @@ export class NativeRuntimeManager {
     const stored = await this.ensurePreferences();
     for (const key of ["launchAtLogin", "startBotAtLogin", "autoRecovery"] as const) {
       if (typeof next[key] === "boolean") stored[key] = next[key];
+    }
+    if (Object.prototype.hasOwnProperty.call(next, "autoLoginAccount")) {
+      stored.autoLoginAccount = normalizeQQAccount(next.autoLoginAccount);
     }
     if (!stored.launchAtLogin) stored.startBotAtLogin = false;
     await writeJson(this.preferencesPath, stored);
@@ -1362,6 +1381,7 @@ export class NativeRuntimeManager {
     const qqPath = await this.findQQPath();
     if (!qqPath) return { ok: false, code: "QQ_REQUIRED", message: "请先安装 Windows QQ" };
     const records = await this.processRecords();
+    const preferences = await this.ensurePreferences();
 
     if (!await managedProcessRunning("astrbot", records.astrbot)) {
       const secrets = await this.ensureSecrets();
@@ -1385,10 +1405,17 @@ export class NativeRuntimeManager {
         NAPCAT_LAUNCHER_PATH: napcatExecutable,
         NAPCAT_MAIN_PATH: mainModule.replace(/\\/g, "/"),
       };
-      await this.launchDetached("napcat", napcatExecutable, [qqPath, path.join(this.napcatRoot, "NapCatWinBootHook.dll")], this.napcatRoot, napcatEnv);
+      const napcatArgs = buildNapCatLaunchArgs(
+        qqPath,
+        path.join(this.napcatRoot, "NapCatWinBootHook.dll"),
+        preferences.autoLoginAccount,
+      );
+      await this.launchDetached("napcat", napcatExecutable, napcatArgs, this.napcatRoot, napcatEnv);
     }
     await this.setDesiredRunning(true);
-    return { ok: true, message: "本机机器人正在启动，请稍候扫码登录 QQ" };
+    return preferences.autoLoginAccount
+      ? { ok: true, message: `本机机器人正在启动，正在尝试快速登录 QQ ${preferences.autoLoginAccount}` }
+      : { ok: true, message: "本机机器人正在启动，请稍候扫码登录 QQ" };
   }
 
   private async stopService(service: NativeServiceId) {
@@ -1636,13 +1663,20 @@ export class NativeRuntimeManager {
         });
     }
 
+    const selectedAutoLoginAccount = runtime.preferences.autoLoginAccount;
     add(acceptance.qqSession.state === "online"
       ? { id: "qq-login", title: "QQ 实时状态", severity: "pass", detail: `${acceptance.qqSession.detail}。`, suggestion: null }
       : acceptance.qqSession.state === "offline"
         ? { id: "qq-login", title: "QQ 实时状态", severity: "error", detail: `${acceptance.qqSession.detail}。`, suggestion: "打开 NapCat 重新登录 QQ。", action: "open-napcat", actionLabel: "打开 NapCat" }
         : acceptance.qqSession.state === "logged-out"
-          ? { id: "qq-login", title: "QQ 实时状态", severity: "warning", detail: "NapCat 管理页可达，但 QQ 尚未登录。", suggestion: "打开 NapCat，使用手机 QQ 扫码登录独立测试账号。", action: "open-napcat", actionLabel: "打开 NapCat" }
+          ? { id: "qq-login", title: "QQ 实时状态", severity: "warning", detail: selectedAutoLoginAccount ? `未能快速登录 QQ ${selectedAutoLoginAccount}。` : "NapCat 管理页可达，但 QQ 尚未登录。", suggestion: "打开 NapCat，使用手机 QQ 扫码登录独立测试账号。", action: "open-napcat", actionLabel: "打开 NapCat" }
           : { id: "qq-login", title: "QQ 实时状态", severity: acceptance.servicesReady ? "warning" : "error", detail: `暂时无法确认 QQ 是否在线：${acceptance.qqSession.detail}。`, suggestion: "确认 NapCat 正常运行并检查 WebUI Token。", action: "open-napcat", actionLabel: "打开 NapCat" });
+    if (selectedAutoLoginAccount && acceptance.qqSession.state === "online") {
+      const matches = acceptance.qqSession.account === selectedAutoLoginAccount;
+      add(matches
+        ? { id: "qq-account-match", title: "自动登录账号", severity: "pass", detail: `当前在线账号与所选 QQ ${selectedAutoLoginAccount} 一致。`, suggestion: null }
+        : { id: "qq-account-match", title: "自动登录账号", severity: "error", detail: `计划登录 QQ ${selectedAutoLoginAccount}，实际在线账号为 ${acceptance.qqSession.account ?? "未知"}。`, suggestion: "停止机器人，确认账号选择后重新启动。", action: "restart", actionLabel: "重新启动" });
+    }
     add(acceptance.onebotConfigured && acceptance.onebotConnected
       ? { id: "onebot", title: "OneBot 通道", severity: "pass", detail: "NapCat 已与 AstrBot 建立本机 WebSocket 连接。", suggestion: null }
       : {
@@ -1729,6 +1763,20 @@ export class NativeRuntimeManager {
       return { recovered: false, message: error instanceof Error ? error.message : "自动恢复失败" };
     } finally {
       this.busy = false;
+    }
+  }
+
+  async getQQLoginAccounts(): Promise<NapCatQuickLoginAccount[]> {
+    const records = await this.processRecords();
+    if (!await managedProcessRunning("napcat", records.napcat)) {
+      throw new Error("NapCat 尚未运行，请先启动机器人后再刷新账号");
+    }
+    const { napcatToken } = await this.getCredentials();
+    try {
+      return await this.napcatStatus.getQuickLoginAccounts(napcatToken);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "NapCat 接口暂时不可用";
+      throw new Error(`无法读取 NapCat 快速登录账号：${detail}`);
     }
   }
 

@@ -25,6 +25,7 @@ import {
 
 import {
   NativeRuntimeManager,
+  isValidQQAccount,
   type InstallProgress,
   type NativeAction,
   type NativePreferences,
@@ -585,11 +586,18 @@ function registerIpc() {
     return performRuntimeAction(action);
   }));
   ipcMain.handle("desktop:get-preferences", trustedHandler(() => runtimeManager.getPreferences()));
+  ipcMain.handle("desktop:get-qq-login-accounts", trustedHandler(() => runtimeManager.getQQLoginAccounts()));
   ipcMain.handle("desktop:set-preferences", trustedHandler(async (next: Partial<NativePreferences>) => {
     if (!next || typeof next !== "object" || Array.isArray(next)) throw new Error("Unsupported preferences");
-    const allowed = ["launchAtLogin", "startBotAtLogin", "autoRecovery"];
+    const allowed = ["launchAtLogin", "startBotAtLogin", "autoRecovery", "autoLoginAccount"];
     if (Object.keys(next).some((key) => !allowed.includes(key))) throw new Error("Unsupported preference key");
-    if (Object.values(next).some((value) => typeof value !== "boolean")) throw new Error("Unsupported preference value");
+    for (const [key, value] of Object.entries(next)) {
+      if (key === "autoLoginAccount") {
+        if (value !== null && !isValidQQAccount(value)) throw new Error("QQ 账号格式无效");
+      } else if (typeof value !== "boolean") {
+        throw new Error("Unsupported preference value");
+      }
+    }
     const preferences = await updatePreferences(next);
     await refreshTray();
     return preferences;

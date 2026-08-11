@@ -75,6 +75,49 @@ describe("NapCat real-time QQ session status", () => {
     expect(fetcher.mock.calls.filter(([input]) => String(input).endsWith("/api/auth/login"))).toHaveLength(1);
   });
 
+  it("normalizes the accounts in NapCat's current quick-login list", async () => {
+    const fetcher = vi.fn(async (input: string) => {
+      if (input.endsWith("/api/auth/login")) return jsonResponse({ code: 0, data: { Credential: "credential" } });
+      return jsonResponse({
+        code: 0,
+        data: [
+          { uin: "123456789", nickName: "测试猫", faceUrl: "https://example.test/cat.png", isQuickLogin: true },
+          { uin: "987654321", nickName: "需要重新验证", isQuickLogin: false },
+          { uin: "not-a-qq", nickName: "无效账号", isQuickLogin: true },
+        ],
+      });
+    });
+    const client = new NapCatStatusClient({ fetcher });
+
+    await expect(client.getQuickLoginAccounts("local-secret")).resolves.toEqual([
+      {
+        account: "123456789",
+        nickname: "测试猫",
+        avatarUrl: "https://example.test/cat.png",
+      },
+      {
+        account: "987654321",
+        nickname: "需要重新验证",
+        avatarUrl: null,
+      },
+    ]);
+  });
+
+  it("falls back to NapCat's legacy quick-login list", async () => {
+    const fetcher = vi.fn(async (input: string) => {
+      if (input.endsWith("/api/auth/login")) return jsonResponse({ code: 0, data: { Credential: "credential" } });
+      if (input.endsWith("/GetQuickLoginListNew")) return jsonResponse({ code: 1, message: "unsupported" });
+      return jsonResponse({ code: 0, data: ["123456789"] });
+    });
+    const client = new NapCatStatusClient({ fetcher });
+
+    await expect(client.getQuickLoginAccounts("local-secret")).resolves.toEqual([{
+      account: "123456789",
+      nickname: null,
+      avatarUrl: null,
+    }]);
+  });
+
   it("uses unknown instead of falsely reporting logged out when the live check fails", async () => {
     const fetcher = vi.fn(async () => {
       const error = new Error("aborted");

@@ -9,7 +9,7 @@
 构建产物：
 
 ```text
-release/Rosemewbot-Setup-0.5.10-x64.exe
+release/Rosemewbot-Setup-0.6.0-x64.exe
 ```
 
 用户流程只有三步：
@@ -39,6 +39,7 @@ C:\Rosemewbot-data\
 - AstrBot、NapCat 完整后台的单窗口内嵌工作区。
 - 通过 NapCat WebUI 实时验收 QQ 登录/在线状态，并继续检查组件、真实 OneBot 连接与默认模型配置。
 - Windows 系统托盘、开机启动、登录后自动启动机器人和掉线自动恢复。
+- 从 NapCat 已记录的 QQ 中选择一个账号，Windows 登录后尝试快速登录；会话失效时回退到扫码登录。
 - 智能诊断组件、QQ、端口、模型与磁盘空间，并提供对应处理入口。
 - 下载/安装进度、运行状态、最近日志和敏感凭据脱敏。
 - 运行控制、接入向导及两个内嵌后台顶部均可按需显示、复制对应的 AstrBot 登录凭据或 NapCat Token。

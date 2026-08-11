@@ -10,6 +10,12 @@ export interface QQSessionStatus {
   detail: string;
 }
 
+export interface NapCatQuickLoginAccount {
+  account: string;
+  nickname: string | null;
+  avatarUrl: string | null;
+}
+
 interface NapCatResponse<T> {
   code: number;
   message?: string;
@@ -32,6 +38,13 @@ interface NapCatLoginInfoData {
   user_id?: string | number;
   nick?: string;
   nickname?: string;
+}
+
+interface NapCatQuickLoginData {
+  uin?: string | number;
+  nickName?: string;
+  nickname?: string;
+  faceUrl?: string;
 }
 
 type Fetcher = (input: string, init?: RequestInit) => Promise<Response>;
@@ -124,16 +137,49 @@ export class NapCatStatusClient {
     return promise;
   }
 
-  private async authorizedPost<T>(token: string, path: string) {
+  private async authorizedPost<T>(token: string, path: string, body: Record<string, unknown> = {}) {
     let credential = await this.getCredential(token);
     try {
-      return await this.post<T>(path, {}, credential);
+      return await this.post<T>(path, body, credential);
     } catch (error) {
       if (!(error instanceof NapCatApiError) || !error.unauthorized) throw error;
       this.credential = null;
       credential = await this.getCredential(token);
-      return this.post<T>(path, {}, credential);
+      return this.post<T>(path, body, credential);
     }
+  }
+
+  async getQuickLoginAccounts(token: string): Promise<NapCatQuickLoginAccount[]> {
+    if (!token) throw new NapCatApiError("缺少 NapCat WebUI Token");
+
+    let items: Array<NapCatQuickLoginData | string | number>;
+    try {
+      items = await this.authorizedPost<Array<NapCatQuickLoginData | string | number>>(
+        token,
+        "/api/QQLogin/GetQuickLoginListNew",
+      );
+    } catch {
+      items = await this.authorizedPost<Array<string | number>>(token, "/api/QQLogin/GetQuickLoginList");
+    }
+
+    const accounts = new Map<string, NapCatQuickLoginAccount>();
+    for (const item of Array.isArray(items) ? items : []) {
+      const rawAccount = typeof item === "object" && item !== null ? item.uin : item;
+      const account = typeof rawAccount === "string" || typeof rawAccount === "number" ? String(rawAccount).trim() : "";
+      if (!/^[1-9]\d{4,11}$/.test(account)) continue;
+      const nickname = typeof item === "object" && item !== null
+        ? typeof item.nickName === "string" && item.nickName.trim()
+          ? item.nickName.trim()
+          : typeof item.nickname === "string" && item.nickname.trim()
+            ? item.nickname.trim()
+            : null
+        : null;
+      const avatarUrl = typeof item === "object" && item !== null && typeof item.faceUrl === "string" && item.faceUrl
+        ? item.faceUrl
+        : null;
+      accounts.set(account, { account, nickname, avatarUrl });
+    }
+    return [...accounts.values()];
   }
 
   private async getLoginInfo(token: string) {

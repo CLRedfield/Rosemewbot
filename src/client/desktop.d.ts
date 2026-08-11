@@ -6,6 +6,7 @@ import type {
   DesktopInstallProgress,
   DesktopDiagnosticReport,
   DesktopPreferences,
+  DesktopQQLoginAccount,
   DesktopStatus,
   EmbeddedPanelBounds,
   EmbeddedPanelId,
@@ -22,6 +23,7 @@ interface RosemewbotDesktopApi {
   openAppUpdatePage(): Promise<{ ok: boolean }>;
   runAction(action: DesktopAction): Promise<DesktopActionResult>;
   getPreferences(): Promise<DesktopPreferences>;
+  getQQLoginAccounts(): Promise<DesktopQQLoginAccount[]>;
   setPreferences(preferences: Partial<DesktopPreferences>): Promise<DesktopPreferences>;
   runDiagnostics(): Promise<DesktopDiagnosticReport>;
   getLogs(service: "astrbot" | "napcat"): Promise<string>;
