@@ -9,11 +9,13 @@ let EmbeddedCredentials: (typeof import("../src/client/App"))["EmbeddedCredentia
 const credentials = {
   astrbotUsername: "astrbot-admin",
   astrbotPassword: "astrbot-secret",
+  astrbotCredentialState: "ready" as const,
   napcatToken: "napcat-secret-token",
 };
 
 describe("embedded panel credentials", () => {
   const getCredentials = vi.fn().mockResolvedValue(credentials);
+  const runAction = vi.fn().mockResolvedValue({ ok: true, message: "done" });
 
   beforeAll(async () => {
     Object.defineProperty(window, "matchMedia", {
@@ -29,9 +31,11 @@ describe("embedded panel credentials", () => {
 
   beforeEach(() => {
     getCredentials.mockClear();
+    getCredentials.mockResolvedValue(credentials);
+    runAction.mockClear();
     Object.defineProperty(window, "rosemewbotDesktop", {
       configurable: true,
-      value: { getCredentials },
+      value: { getCredentials, runAction },
     });
   });
 
@@ -60,7 +64,7 @@ describe("embedded panel credentials", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "显示 NapCat 登录凭据" }));
     expect(await screen.findByText(credentials.napcatToken)).toBeInTheDocument();
-    expect(getCredentials).toHaveBeenCalledTimes(1);
+    expect(getCredentials).toHaveBeenCalledTimes(2);
   });
 
   it("reveals the AstrBot username and password without exposing the NapCat token", async () => {
@@ -75,5 +79,24 @@ describe("embedded panel credentials", () => {
     expect(screen.getByText(credentials.astrbotPassword)).toBeInTheDocument();
     expect(screen.queryByText(credentials.napcatToken)).not.toBeInTheDocument();
     expect(getCredentials).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not expose a stale AstrBot password and can reset it", async () => {
+    const rotatedCredentials = { ...credentials, astrbotPassword: "new-astrbot-secret" };
+    getCredentials
+      .mockResolvedValueOnce({ ...credentials, astrbotCredentialState: "out-of-sync" })
+      .mockResolvedValueOnce(rotatedCredentials);
+    render(<EmbeddedCredentials panel="astrbot" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "显示 AstrBot 登录凭据" }));
+
+    expect(await screen.findByText(/旧密码无法登录/)).toBeInTheDocument();
+    expect(screen.queryByText(credentials.astrbotPassword)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "重置密码" }));
+
+    expect(await screen.findByText(rotatedCredentials.astrbotPassword)).toBeInTheDocument();
+    expect(screen.queryByText(credentials.astrbotPassword)).not.toBeInTheDocument();
+    expect(runAction).toHaveBeenCalledWith("reset-astrbot-credentials");
   });
 });

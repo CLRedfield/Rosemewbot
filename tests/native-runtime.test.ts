@@ -1,4 +1,5 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash, pbkdf2Sync } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 
@@ -12,9 +13,11 @@ import {
   buildNapCatWebUiConfig,
   findNapCatAccountFromNames,
   getComponentCompatibilityStatus,
+  getAstrBotCredentialState,
   hasManagedNapCatConnection,
   inspectAstrBotConfig,
   isValidDashboardPassword,
+  verifyAstrBotDashboardPassword,
   isValidQQAccount,
   parseQQDisplayVersion,
   parseNetstatConnections,
@@ -78,6 +81,25 @@ describe("Windows native runtime configuration", () => {
     expect(isValidDashboardPassword("lowercase-only-123")).toBe(false);
     expect(isValidDashboardPassword("UPPERCASE-ONLY-123")).toBe(false);
     expect(isValidDashboardPassword("Aq7-long-random-secret")).toBe(true);
+  });
+
+  it("detects when an imported AstrBot config replaced the managed dashboard password", () => {
+    const password = "Aq7-managed-secret";
+    const salt = "00112233445566778899aabbccddeeff";
+    const iterations = 1_000;
+    const digest = pbkdf2Sync(password, Buffer.from(salt, "hex"), iterations, 32, "sha256").toString("hex");
+    const matchingConfig = {
+      dashboard: {
+        username: "astrbot",
+        password: createHash("md5").update(password).digest("hex"),
+        pbkdf2_password: `pbkdf2_sha256$${iterations}$${salt}$${digest}`,
+      },
+    };
+
+    expect(verifyAstrBotDashboardPassword(matchingConfig.dashboard.pbkdf2_password, password)).toBe(true);
+    expect(getAstrBotCredentialState(matchingConfig, "astrbot", password)).toBe("ready");
+    expect(getAstrBotCredentialState(matchingConfig, "astrbot", "Aq7-imported-secret")).toBe("out-of-sync");
+    expect(getAstrBotCredentialState({}, "astrbot", password)).toBe("pending");
   });
 
   it("recognizes an established OneBot connection from Windows netstat output", () => {

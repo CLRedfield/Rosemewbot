@@ -65,6 +65,7 @@ Windows 常规卸载只删除程序目录，不删除相邻的 `-data` 目录。
 | 更新组件 | 安装 Rosemewbot 当前稳定策略锁定的 AstrBot 与 NapCat 组合 | 升级前自动快照，失败自动回滚 |
 | 修复组件 | 重新安装当前稳定策略锁定版本并修复 Rosemewbot 连接契约 | 保留配置与登录 |
 | 回滚组件 | 恢复最近一次升级前的组件程序与配置快照 | 保留当前用户数据边界 |
+| 重置 AstrBot 登录密码 | 凭据失同步时生成全新随机密码，写入 AstrBot 后只重启 AstrBot 服务 | 保留机器人配置与其他组件 |
 | 打开完整设置 | 在主窗口内切换到隔离的本机后台工作区 | 不自动修改设置 |
 | 检查应用更新 | 查询 Rosemewbot 最新正式版；有新版时打开受信任的 GitHub 发布页 | 不自动修改或删除本机数据 |
 | 一键完全卸载 | 二次确认后停止组件并启动专用静默卸载流程 | 永久删除 Rosemewbot 程序与全部本地数据，不删除腾讯 QQ |
@@ -117,6 +118,7 @@ WebUI 使用 `127.0.0.1:6099`，AstrBot 使用 `127.0.0.1:6185`。这些端口�
 - 本机后台通过禁用 Node Integration 的独立 WebContentsView 嵌入主窗口；跨源导航被拦截，外部 HTTPS 交给系统浏览器。
 - GitHub Release 提供 SHA-256 digest 时必须匹配；QQ 安装器必须通过 Tencent 数字签名验证。
 - 凭据使用加密随机数生成，文件只保存在当前用户数据目录；日志展示前执行脱敏。
+- 展示 AstrBot 密码前会校验当前 MD5/PBKDF2 认证哈希；失同步时隐藏旧密码，并通过可回滚的重置流程恢复一致性。
 - 日常递归替换和删除只允许发生在 `native-runtime` 管理目录内；用户明确确认一键完全卸载时，安装器才可清理程序目录、相邻数据目录与已知旧版目录。
 - 停止进程前同时核对 PID 与可执行文件名，避免 Windows 重启或 PID 复用造成误杀。
 
@@ -134,7 +136,7 @@ npm run desktop:pack
 构建产物：
 
 ```text
-release/Rosemewbot-Setup-0.6.0-x64.exe
+release/Rosemewbot-Setup-0.6.1-x64.exe
 release/win-unpacked/Rosemewbot.exe
 ```
 

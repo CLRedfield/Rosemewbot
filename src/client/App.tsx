@@ -268,15 +268,17 @@ function OnboardingCredentials() {
   if (!desktop) return null;
 
   const toggle = async () => {
-    if (!credentials) {
-      setLoading(true);
-      try {
-        setCredentials(await desktop.getCredentials());
-      } finally {
-        setLoading(false);
-      }
+    if (visible) {
+      setVisible(false);
+      return;
     }
-    setVisible((current) => !current);
+    setLoading(true);
+    try {
+      setCredentials(await desktop.getCredentials());
+      setVisible(true);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -292,7 +294,9 @@ function OnboardingCredentials() {
       {visible && credentials && (
         <div className="credential-list onboarding-credential-list">
           <div><span>AstrBot 用户名</span><code>{credentials.astrbotUsername}</code><CopyButton value={credentials.astrbotUsername} /></div>
-          <div><span>AstrBot 密码</span><code>{credentials.astrbotPassword}</code><CopyButton value={credentials.astrbotPassword} /></div>
+          {credentials.astrbotCredentialState === "out-of-sync"
+            ? <div><span>AstrBot 密码</span><code>已被 AstrBot 配置覆盖</code><small>请在 AstrBot 工作区重置</small></div>
+            : <div><span>AstrBot 密码</span><code>{credentials.astrbotPassword}</code><CopyButton value={credentials.astrbotPassword} /></div>}
           <div><span>NapCat 登录 Token</span><code>{credentials.napcatToken}</code><CopyButton value={credentials.napcatToken} /></div>
         </div>
       )}
@@ -350,6 +354,7 @@ export function EmbeddedCredentials({ panel }: { panel: EmbeddedPanelId }) {
   const [credentials, setCredentials] = useState<DesktopCredentials | null>(null);
   const [visible, setVisible] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const label = panel === "napcat" ? "NapCat" : "AstrBot";
   const credentialId = `embedded-${panel}-credentials`;
@@ -362,11 +367,6 @@ export function EmbeddedCredentials({ panel }: { panel: EmbeddedPanelId }) {
       return;
     }
 
-    if (credentials) {
-      setVisible(true);
-      return;
-    }
-
     setLoading(true);
     setError(null);
     try {
@@ -376,6 +376,25 @@ export function EmbeddedCredentials({ panel }: { panel: EmbeddedPanelId }) {
       setError("凭据读取失败，请稍后重试");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const resetAstrBotCredentials = async () => {
+    setSyncing(true);
+    setError(null);
+    try {
+      const result = await desktop.runAction("reset-astrbot-credentials");
+      if (!result.ok) {
+        setError(result.message);
+        return;
+      }
+      const next = await desktop.getCredentials();
+      setCredentials(next);
+      if (next.astrbotCredentialState !== "ready") setError("密码重置后校验失败，请在运行控制中查看日志");
+    } catch (syncError) {
+      setError(syncError instanceof Error ? syncError.message : "AstrBot 密码重置失败");
+    } finally {
+      setSyncing(false);
     }
   };
 
@@ -397,7 +416,16 @@ export function EmbeddedCredentials({ panel }: { panel: EmbeddedPanelId }) {
               <CopyButton value={credentials.astrbotUsername} />
             </div>
           )}
-          {panel === "astrbot" && (
+          {panel === "astrbot" && credentials.astrbotCredentialState === "out-of-sync" && (
+            <div className="embedded-credential-sync" role="alert">
+              <span>AstrBot 密码已被后台修改或备份配置覆盖，此处保存的旧密码无法登录。</span>
+              <button type="button" disabled={syncing} onClick={() => void resetAstrBotCredentials()}>
+                <RefreshCw size={13} className={syncing ? "spin" : undefined} />
+                {syncing ? "重置中" : "重置密码"}
+              </button>
+            </div>
+          )}
+          {panel === "astrbot" && credentials.astrbotCredentialState !== "out-of-sync" && (
             <div className="embedded-credential-value">
               <span>密码</span>
               <code>{credentials.astrbotPassword}</code>

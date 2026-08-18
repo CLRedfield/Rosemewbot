@@ -581,7 +581,7 @@ function registerIpc() {
     return { ok: true };
   }));
   ipcMain.handle("desktop:run-action", trustedHandler((action: NativeAction) => {
-    const allowed: NativeAction[] = ["install", "install-qq", "start", "stop", "restart", "update", "repair", "rollback"];
+    const allowed: NativeAction[] = ["install", "install-qq", "start", "stop", "restart", "update", "repair", "rollback", "reset-astrbot-credentials"];
     if (!allowed.includes(action)) throw new Error("Unsupported action");
     return performRuntimeAction(action);
   }));

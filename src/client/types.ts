@@ -155,6 +155,7 @@ export interface DesktopDiagnosticReport {
 export interface DesktopCredentials {
   astrbotUsername: string;
   astrbotPassword: string;
+  astrbotCredentialState: "pending" | "ready" | "out-of-sync";
   napcatToken: string;
 }
 
@@ -174,7 +175,7 @@ export interface DesktopAppUpdateResult {
   message: string;
 }
 
-export type DesktopAction = "install" | "install-qq" | "start" | "stop" | "restart" | "update" | "repair" | "rollback";
+export type DesktopAction = "install" | "install-qq" | "start" | "stop" | "restart" | "update" | "repair" | "rollback" | "reset-astrbot-credentials";
 
 export type EmbeddedPanelId = "astrbot" | "napcat";
 

@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, pbkdf2Sync, randomBytes, timingSafeEqual } from "node:crypto";
 import { closeSync, createWriteStream, existsSync, openSync } from "node:fs";
 import {
   copyFile,
@@ -25,8 +25,9 @@ import componentLock from "../config/components-lock.json";
 import { collectStatus } from "../src/server/probe.js";
 import { NapCatStatusClient, type NapCatQuickLoginAccount, type QQSessionStatus } from "./napcat-status.js";
 
-export type NativeAction = "install" | "install-qq" | "start" | "stop" | "restart" | "update" | "repair" | "rollback";
+export type NativeAction = "install" | "install-qq" | "start" | "stop" | "restart" | "update" | "repair" | "rollback" | "reset-astrbot-credentials";
 export type NativeServiceId = "astrbot" | "napcat";
+export type AstrBotCredentialState = "pending" | "ready" | "out-of-sync";
 
 export interface NativePreferences {
   launchAtLogin: boolean;
@@ -219,7 +220,7 @@ export const COMPONENT_POLICY = componentLock as {
 };
 const githubHeaders = {
   Accept: "application/vnd.github+json",
-  "User-Agent": "Rosemewbot-Native/0.6.0",
+  "User-Agent": "Rosemewbot-Native/0.6.1",
   "X-GitHub-Api-Version": "2022-11-28",
 };
 const managedNapCatConnectionName = "Rosemewbot · AstrBot";
@@ -245,6 +246,64 @@ function randomDashboardPassword() {
 
 export function isValidDashboardPassword(value: string) {
   return value.length >= 12 && /[A-Z]/.test(value) && /[a-z]/.test(value) && /\d/.test(value);
+}
+
+function safeEqual(left: Buffer, right: Buffer) {
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+function parseAstrBotPbkdf2Hash(storedHash: unknown) {
+  if (typeof storedHash !== "string") return null;
+  const parts = storedHash.split("$");
+  if (parts.length !== 4 || parts[0] !== "pbkdf2_sha256") return null;
+  const iterations = Number(parts[1]);
+  const [, , saltHex, digestHex] = parts;
+  if (
+    !Number.isSafeInteger(iterations)
+    || iterations <= 0
+    || !/^(?:[0-9a-f]{2})+$/i.test(saltHex)
+    || !/^(?:[0-9a-f]{2})+$/i.test(digestHex)
+  ) return null;
+  return { iterations, saltHex, digestHex };
+}
+
+export function verifyAstrBotDashboardPassword(storedHash: unknown, candidate: string) {
+  if (typeof storedHash !== "string" || !candidate) return false;
+
+  if (/^[0-9a-f]{32}$/i.test(storedHash)) {
+    const candidateHash = createHash("md5").update(candidate, "utf8").digest();
+    return safeEqual(Buffer.from(storedHash, "hex"), candidateHash);
+  }
+
+  const parsed = parseAstrBotPbkdf2Hash(storedHash);
+  if (!parsed || parsed.iterations > 2_000_000) return false;
+  const { iterations, saltHex, digestHex } = parsed;
+
+  const expected = Buffer.from(digestHex, "hex");
+  const actual = pbkdf2Sync(candidate, Buffer.from(saltHex, "hex"), iterations, expected.length, "sha256");
+  return safeEqual(expected, actual);
+}
+
+export function getAstrBotCredentialState(
+  config: Record<string, unknown>,
+  username: string,
+  password: string,
+): AstrBotCredentialState {
+  const dashboard = config.dashboard && typeof config.dashboard === "object"
+    ? config.dashboard as Record<string, unknown>
+    : null;
+  if (!dashboard) return "pending";
+
+  const configuredUsername = dashboard.username;
+  const pbkdf2Password = dashboard.pbkdf2_password;
+  const legacyPassword = dashboard.password;
+  const hasPbkdf2Password = Boolean(parseAstrBotPbkdf2Hash(pbkdf2Password));
+  const activePassword = hasPbkdf2Password ? pbkdf2Password : legacyPassword;
+  if (typeof configuredUsername !== "string" || typeof activePassword !== "string" || !activePassword) return "pending";
+
+  return configuredUsername === username && verifyAstrBotDashboardPassword(activePassword, password)
+    ? "ready"
+    : "out-of-sync";
 }
 
 function normalizeUninstallPath(value: string) {
@@ -884,6 +943,13 @@ export class NativeRuntimeManager {
     return secrets;
   }
 
+  private async rotateAstrBotPassword() {
+    const secrets = await this.ensureSecrets();
+    const rotated = { ...secrets, astrbotPassword: randomDashboardPassword() };
+    await writeJson(this.secretsPath, rotated);
+    return rotated;
+  }
+
   private uvEnvironment() {
     return {
       ...process.env,
@@ -963,6 +1029,16 @@ export class NativeRuntimeManager {
     await writeJson(configPath, reconcileAstrBotConfig(config));
   }
 
+  private async configureAstrBotCredentials(executable: string) {
+    const secrets = await this.ensureSecrets();
+    for (const [key, value] of [
+      ["dashboard.username", secrets.astrbotUsername],
+      ["dashboard.password", secrets.astrbotPassword],
+    ]) {
+      await this.runInstallerCommand(executable, ["conf", "set", key, value], this.astrbotRoot, "astrbot-config.log");
+    }
+  }
+
   private async configureAstrBot(executable: string) {
     this.setProgress({ stage: "configuring", component: "astrbot", percent: 50, detail: "正在初始化 AstrBot" });
     const dataDir = path.join(this.astrbotRoot, "data");
@@ -976,10 +1052,9 @@ export class NativeRuntimeManager {
         { ASTRBOT_DASHBOARD_INITIAL_PASSWORD: secrets.astrbotPassword },
       );
     }
+    await this.configureAstrBotCredentials(executable);
     for (const [key, value] of [
       ["dashboard.port", "6185"],
-      ["dashboard.username", secrets.astrbotUsername],
-      ["dashboard.password", secrets.astrbotPassword],
       ["timezone", "Asia/Tokyo"],
     ]) {
       await this.runInstallerCommand(executable, ["conf", "set", key, value], this.astrbotRoot, "astrbot-config.log");
@@ -1372,6 +1447,15 @@ export class NativeRuntimeManager {
     }
   }
 
+  private async launchAstrBot(executable = path.join(this.binRoot, "astrbot.exe")) {
+    const secrets = await this.ensureSecrets();
+    await this.launchDetached("astrbot", executable, ["run"], this.astrbotRoot, {
+      ...this.uvEnvironment(),
+      ASTRBOT_DASHBOARD_INITIAL_PASSWORD: secrets.astrbotPassword,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 900));
+  }
+
   private async startServices(): Promise<NativeActionResult> {
     const astrbotExecutable = path.join(this.binRoot, "astrbot.exe");
     const napcatExecutable = path.join(this.napcatRoot, "NapCatWinBootMain.exe");
@@ -1384,12 +1468,7 @@ export class NativeRuntimeManager {
     const preferences = await this.ensurePreferences();
 
     if (!await managedProcessRunning("astrbot", records.astrbot)) {
-      const secrets = await this.ensureSecrets();
-      await this.launchDetached("astrbot", astrbotExecutable, ["run"], this.astrbotRoot, {
-        ...this.uvEnvironment(),
-        ASTRBOT_DASHBOARD_INITIAL_PASSWORD: secrets.astrbotPassword,
-      });
-      await new Promise((resolve) => setTimeout(resolve, 900));
+      await this.launchAstrBot(astrbotExecutable);
     }
 
     if (!await managedProcessRunning("napcat", records.napcat)) {
@@ -1447,6 +1526,48 @@ export class NativeRuntimeManager {
     return { ok: true, message: "机器人已停止，配置与登录数据均已保留" } satisfies NativeActionResult;
   }
 
+  private async resetAstrBotCredentials(): Promise<NativeActionResult> {
+    const executable = path.join(this.binRoot, "astrbot.exe");
+    if (!await fileExists(executable)) return { ok: false, message: "AstrBot 尚未准备，无法重置登录密码" };
+
+    const records = await this.processRecords();
+    const wasRunning = await managedProcessRunning("astrbot", records.astrbot);
+    const configPath = path.join(this.astrbotRoot, "data", "cmd_config.json");
+    const previousSecrets = await this.ensureSecrets();
+    const previousConfig = await readFile(configPath).catch(() => null);
+    if (wasRunning) await this.stopService("astrbot");
+
+    let operationError: unknown = null;
+    try {
+      this.setProgress({ stage: "configuring", component: "astrbot", percent: 50, detail: "正在重置 AstrBot 登录密码" });
+      await this.rotateAstrBotPassword();
+      await this.configureAstrBotCredentials(executable);
+      const credentials = await this.getCredentials();
+      if (credentials.astrbotCredentialState !== "ready") throw new Error("AstrBot 登录密码写入后校验失败");
+    } catch (error) {
+      operationError = error;
+      await writeJson(this.secretsPath, previousSecrets).catch(() => undefined);
+      if (previousConfig) await writeFile(configPath, previousConfig).catch(() => undefined);
+    }
+
+    if (wasRunning) {
+      try {
+        await this.launchAstrBot(executable);
+      } catch (error) {
+        operationError ??= error;
+      }
+    }
+
+    if (operationError) throw operationError;
+    this.setProgress({ stage: "complete", component: "astrbot", percent: 100, detail: "AstrBot 登录密码已重置" });
+    return {
+      ok: true,
+      message: wasRunning
+        ? "AstrBot 登录密码已重新生成，服务已重新启动"
+        : "AstrBot 登录密码已重新生成，将在下次启动时生效",
+    };
+  }
+
   async runAction(action: NativeAction): Promise<NativeActionResult> {
     if (this.busy) return { ok: false, message: "已有操作正在进行，请稍候" };
     this.busy = true;
@@ -1463,6 +1584,7 @@ export class NativeRuntimeManager {
         this.recoveryAttempted = false;
         return await this.startServices();
       }
+      if (action === "reset-astrbot-credentials") return await this.resetAstrBotCredentials();
       if (action === "update" || action === "repair") return await this.maintainCompatibleComponents(action);
       if (action === "rollback") return await this.rollbackCompatibleComponents();
       return { ok: false, message: "不支持的操作" };
@@ -1572,6 +1694,14 @@ export class NativeRuntimeManager {
     return inspectAstrBotConfig(config);
   }
 
+  private async getNapCatToken() {
+    const [secrets, webUi] = await Promise.all([
+      this.ensureSecrets(),
+      readJson<{ token?: string }>(path.join(this.napcatRoot, "config", "webui.json"), {}),
+    ]);
+    return webUi.token ?? secrets.napcatToken;
+  }
+
   private async getAcceptance(runtime: NativeRuntimeState, stack: Awaited<ReturnType<typeof collectStatus>>): Promise<NativeAcceptanceState> {
     const napcatService = stack.services.find((service) => service.id === "napcat");
     const napcatRunning = runtime.services.find((service) => service.id === "napcat")?.running === true;
@@ -1579,8 +1709,8 @@ export class NativeRuntimeManager {
       ? Promise.resolve({ state: "unknown", account: null, nickname: null, checkedAt: new Date().toISOString(), detail: "NapCat 尚未运行" })
       : napcatService?.state !== "ready"
         ? Promise.resolve({ state: "unknown", account: null, nickname: null, checkedAt: new Date().toISOString(), detail: "NapCat 管理页不可达" })
-        : this.getCredentials()
-          .then((credentials) => this.napcatStatus.getSession(credentials.napcatToken))
+        : this.getNapCatToken()
+          .then((token) => this.napcatStatus.getSession(token))
           .catch((error: unknown) => ({
             state: "unknown" as const,
             account: null,
@@ -1642,6 +1772,20 @@ export class NativeRuntimeManager {
     add(acceptance.componentsReady
       ? { id: "components", title: "本机组件", severity: "pass", detail: "AstrBot 与 NapCat 程序文件完整。", suggestion: null }
       : { id: "components", title: "本机组件", severity: "error", detail: "AstrBot 或 NapCat 尚未准备完成。", suggestion: "运行一键首次准备。", action: "install", actionLabel: "一键准备" });
+    if (acceptance.componentsReady) {
+      const credentials = await this.getCredentials();
+      add(credentials.astrbotCredentialState === "ready"
+        ? { id: "astrbot-credentials", title: "AstrBot 登录凭据", severity: "pass", detail: "Rosemewbot 保存的登录密码与 AstrBot 当前认证配置一致。", suggestion: null }
+        : {
+          id: "astrbot-credentials",
+          title: "AstrBot 登录凭据",
+          severity: "error",
+          detail: "AstrBot 的密码可能被后台修改或被备份配置覆盖，当前显示的本机密码已失效。",
+          suggestion: "重新生成登录密码；该操作只重启 AstrBot，不会重装组件或删除机器人配置。",
+          action: "reset-astrbot-credentials",
+          actionLabel: "重置登录密码",
+        });
+    }
     add(acceptance.qqInstalled
       ? { id: "qq-installed", title: "Windows QQ", severity: "pass", detail: runtime.qqPath ? `已识别：${runtime.qqPath}` : "已安装。", suggestion: null }
       : { id: "qq-installed", title: "Windows QQ", severity: "error", detail: "没有找到 Windows QQ。", suggestion: "安装腾讯官方 Windows QQ。", action: "install-qq", actionLabel: "安装 QQ" });
@@ -1771,7 +1915,7 @@ export class NativeRuntimeManager {
     if (!await managedProcessRunning("napcat", records.napcat)) {
       throw new Error("NapCat 尚未运行，请先启动机器人后再刷新账号");
     }
-    const { napcatToken } = await this.getCredentials();
+    const napcatToken = await this.getNapCatToken();
     try {
       return await this.napcatStatus.getQuickLoginAccounts(napcatToken);
     } catch (error) {
@@ -1792,6 +1936,7 @@ export class NativeRuntimeManager {
     return {
       ...secrets,
       astrbotUsername: typeof dashboard.username === "string" && dashboard.username ? dashboard.username : secrets.astrbotUsername,
+      astrbotCredentialState: getAstrBotCredentialState(astrbotConfig, secrets.astrbotUsername, secrets.astrbotPassword),
       napcatToken: webUi.token ?? secrets.napcatToken,
     };
   }
