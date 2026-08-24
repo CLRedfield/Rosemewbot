@@ -172,10 +172,16 @@ export interface DownloadProgressContext {
 
 export interface DownloadFileOptions {
   sha256?: string;
+  reuseVerifiedTarget?: boolean;
   maxAttempts?: number;
   inactivityTimeoutMs?: number;
   totalTimeoutMs?: number;
   retryDelaysMs?: number[];
+}
+
+export interface DownloadFileResult {
+  cached: boolean;
+  source: DownloadSource | null;
 }
 
 export interface DownloadSourceHealth extends DownloadSource {
@@ -212,6 +218,7 @@ interface SnapshotMetadata {
   schemaVersion: 1;
   createdAt: string;
   reason: "update" | "repair";
+  components?: ComponentMaintenancePlan;
   versions: {
     astrbot: string | null;
     napcat: string | null;
@@ -229,6 +236,12 @@ interface ProcessRecord {
   astrbot?: number;
   napcat?: number;
   startedAt?: Partial<Record<NativeServiceId, string>>;
+}
+
+export interface ComponentMaintenancePlan {
+  uv: boolean;
+  astrbot: boolean;
+  napcat: boolean;
 }
 
 interface TcpConnection {
@@ -254,7 +267,7 @@ export const COMPONENT_POLICY = componentLock as {
 };
 const githubHeaders = {
   Accept: "application/vnd.github+json",
-  "User-Agent": "Rosemewbot-Native/0.6.2",
+  "User-Agent": "Rosemewbot-Native/0.6.3",
   "X-GitHub-Api-Version": "2022-11-28",
 };
 const managedNapCatConnectionName = "Rosemewbot · AstrBot";
@@ -489,6 +502,23 @@ export function getComponentCompatibilityStatus(installedVersion: string | null 
   return current === normalizeComponentVersion(targetVersion) ? "compatible" as const : "update-available" as const;
 }
 
+export function buildComponentMaintenancePlan(
+  manifest: Pick<RuntimeManifest, "astrbotVersion" | "napcatVersion" | "uvVersion">,
+  installed: { astrbot: boolean; napcat: boolean; uv: boolean },
+  action: "update" | "repair",
+): ComponentMaintenancePlan {
+  const needs = (current: string | undefined, target: string, available: boolean) => (
+    action === "repair"
+    || !available
+    || normalizeComponentVersion(current) !== normalizeComponentVersion(target)
+  );
+  return {
+    uv: needs(manifest.uvVersion, COMPONENT_POLICY.uv.version, installed.uv),
+    astrbot: needs(manifest.astrbotVersion, COMPONENT_POLICY.astrbot.version, installed.astrbot),
+    napcat: needs(manifest.napcatVersion, COMPONENT_POLICY.napcat.version, installed.napcat),
+  };
+}
+
 export function parseQQDisplayVersion(registryOutput: string) {
   const line = registryOutput.split(/\r?\n/).find((item) => /DisplayVersion\s+REG_SZ/i.test(item));
   return line?.replace(/^.*?REG_SZ\s+/i, "").trim() || null;
@@ -558,6 +588,35 @@ async function fileExists(target: string) {
   }
 }
 
+async function copyTree(source: string, target: string) {
+  await mkdir(target, { recursive: true });
+  if (process.platform === "win32") {
+    try {
+      await execFileAsync("robocopy.exe", [
+        source,
+        target,
+        "/E",
+        "/COPY:DAT",
+        "/DCOPY:DAT",
+        "/R:1",
+        "/W:1",
+        "/MT:16",
+        "/NFL",
+        "/NDL",
+        "/NJH",
+        "/NJS",
+        "/NP",
+      ], { windowsHide: true, timeout: 10 * 60_000, maxBuffer: 1024 * 1024 });
+      return;
+    } catch (error) {
+      const result = error as Error & { code?: number | string };
+      const exitCode = typeof result.code === "number" ? result.code : Number.NaN;
+      if (Number.isInteger(exitCode) && exitCode >= 0 && exitCode <= 7) return;
+    }
+  }
+  await cp(source, target, { recursive: true, force: true });
+}
+
 async function findFile(root: string, filename: string): Promise<string | null> {
   if (!await fileExists(root)) return null;
   const entries = await readdir(root, { withFileTypes: true });
@@ -606,6 +665,16 @@ async function verifyLockedDigest(target: string, expected: string, published?: 
     throw new Error("发布文件摘要与兼容策略不一致，已停止安装");
   }
   await verifyDigest(target, `sha256:${normalizedExpected}`);
+}
+
+async function hasVerifiedDigest(target: string, expected: string) {
+  if (!await fileExists(target)) return false;
+  try {
+    await verifyDigest(target, `sha256:${expected.replace(/^sha256:/i, "")}`);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 class DownloadRequestError extends Error {
@@ -820,9 +889,19 @@ export async function downloadFile(
   target: string,
   onProgress: (downloaded: number, total: number | null, context: DownloadProgressContext) => void,
   options: DownloadFileOptions = {},
-) {
+): Promise<DownloadFileResult> {
   let candidates = uniqueDownloadSources(sources);
   if (candidates.length === 0) throw new Error("没有配置可用的下载地址");
+
+  const reuseVerifiedTarget = options.reuseVerifiedTarget ?? Boolean(options.sha256);
+  if (reuseVerifiedTarget && options.sha256 && await fileExists(target)) {
+    try {
+      await verifyDigest(target, `sha256:${options.sha256.replace(/^sha256:/i, "")}`);
+      return { cached: true, source: null };
+    } catch {
+      await rm(target, { force: true });
+    }
+  }
 
   const maxAttempts = Math.max(1, options.maxAttempts ?? 3);
   const inactivityTimeoutMs = Math.max(1_000, options.inactivityTimeoutMs ?? 60_000);
@@ -846,7 +925,7 @@ export async function downloadFile(
       if (options.sha256) await verifyDigest(partial, `sha256:${options.sha256.replace(/^sha256:/i, "")}`);
       await rm(target, { force: true });
       await rename(partial, target);
-      return;
+      return { cached: false, source };
     } catch (error) {
       lastError = normalizeDownloadError(error);
       if (!lastError.retryable) candidates = candidates.filter((candidate) => candidate.url !== source.url);
@@ -877,6 +956,23 @@ async function managedProcessRunning(service: NativeServiceId, pid?: number) {
   }
 }
 
+export function orderDownloadSourcesByHealth(sources: DownloadSource[], health: DownloadSourceHealth[]) {
+  const measurements = new Map(health.map((item) => [item.url, item]));
+  return [...sources].sort((left, right) => {
+    const leftHealth = measurements.get(left.url);
+    const rightHealth = measurements.get(right.url);
+    if (leftHealth?.ok !== rightHealth?.ok) return Number(Boolean(rightHealth?.ok)) - Number(Boolean(leftHealth?.ok));
+    if (leftHealth?.ok && rightHealth?.ok) return leftHealth.latencyMs - rightHealth.latencyMs;
+    return 0;
+  });
+}
+
+export function parseProcessIds(output: string) {
+  return [...new Set(output.split(/\r?\n/)
+    .map((line) => Number.parseInt(line.trim(), 10))
+    .filter((pid) => Number.isSafeInteger(pid) && pid > 0))];
+}
+
 function formatMegabytes(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
@@ -886,6 +982,7 @@ export class NativeRuntimeManager {
   readonly onProgress: (progress: InstallProgress) => void;
   private busy = false;
   private progress: InstallProgress = { stage: "idle", component: "runtime", percent: 0, detail: "等待操作" };
+  private progressFloor = 0;
 
   private readonly astrbotRoot: string;
   private readonly napcatRoot: string;
@@ -905,6 +1002,7 @@ export class NativeRuntimeManager {
   private wasHealthy = false;
   private recoveryAttempted = false;
   private readonly napcatStatus = new NapCatStatusClient();
+  private napcatQQProcessCache: { checkedAt: number; pids: number[] } = { checkedAt: 0, pids: [] };
 
   constructor(userDataDir: string, onProgress: (progress: InstallProgress) => void = () => undefined) {
     this.runtimeDir = path.join(userDataDir, "native-runtime");
@@ -926,14 +1024,16 @@ export class NativeRuntimeManager {
   }
 
   private setProgress(progress: InstallProgress) {
+    const monotonicProgress = { ...progress, percent: Math.max(this.progressFloor, progress.percent) };
+    this.progressFloor = monotonicProgress.percent;
     if (
-      this.progress.stage === progress.stage
-      && this.progress.component === progress.component
-      && this.progress.percent === progress.percent
-      && this.progress.detail === progress.detail
+      this.progress.stage === monotonicProgress.stage
+      && this.progress.component === monotonicProgress.component
+      && this.progress.percent === monotonicProgress.percent
+      && this.progress.detail === monotonicProgress.detail
     ) return;
-    this.progress = progress;
-    this.onProgress(progress);
+    this.progress = monotonicProgress;
+    this.onProgress(monotonicProgress);
   }
 
   private assertManagedPath(target: string) {
@@ -946,7 +1046,25 @@ export class NativeRuntimeManager {
 
   private async removeManagedPath(target: string) {
     this.assertManagedPath(target);
-    await rm(target, { recursive: true, force: true });
+    await rm(target, { recursive: true, force: true, maxRetries: 12, retryDelay: 250 });
+  }
+
+  private async removeManagedPathBestEffort(target: string) {
+    try {
+      await this.removeManagedPath(target);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async cleanupStaleMaintenanceDirectories() {
+    const entries = await readdir(this.runtimeDir, { withFileTypes: true }).catch(() => []);
+    const stale = entries.filter((entry) => (
+      entry.isDirectory()
+      && (/^backup-napcat(?:-|$)/i.test(entry.name) || /^staging-(?:napcat|uv)(?:-|$)/i.test(entry.name))
+    ));
+    await Promise.all(stale.map((entry) => this.removeManagedPathBestEffort(path.join(this.runtimeDir, entry.name))));
   }
 
   async initialize() {
@@ -1010,16 +1128,19 @@ export class NativeRuntimeManager {
     return metadata?.schemaVersion === 1 ? metadata : null;
   }
 
-  async createCompatibilitySnapshot(reason: "update" | "repair"): Promise<SnapshotMetadata | null> {
+  async createCompatibilitySnapshot(
+    reason: "update" | "repair",
+    components: ComponentMaintenancePlan = { astrbot: true, napcat: true, uv: true },
+  ): Promise<SnapshotMetadata | null> {
     await this.initialize();
     const manifest = await readJson<RuntimeManifest>(this.manifestPath, {});
     const sources = [
-      { source: path.join(this.astrbotRoot, "data"), name: "astrbot-data" },
-      { source: this.napcatRoot, name: "napcat" },
-      { source: this.toolsRoot, name: "tools" },
-      { source: this.binRoot, name: "bin" },
-    ];
-    const hasComponents = await Promise.all(sources.slice(1).map(({ source }) => fileExists(source)));
+      components.astrbot ? { source: path.join(this.astrbotRoot, "data"), name: "astrbot-data" } : null,
+      components.napcat ? { source: this.napcatRoot, name: "napcat" } : null,
+      components.astrbot ? { source: this.toolsRoot, name: "tools" } : null,
+      components.astrbot || components.uv ? { source: this.binRoot, name: "bin" } : null,
+    ].filter((entry): entry is { source: string; name: string } => Boolean(entry));
+    const hasComponents = await Promise.all(sources.map(({ source }) => fileExists(source)));
     if (!hasComponents.some(Boolean)) return null;
 
     const pending = path.join(this.snapshotsRoot, "pending");
@@ -1027,13 +1148,14 @@ export class NativeRuntimeManager {
     await this.removeManagedPath(pending);
     await mkdir(pending, { recursive: true });
     for (const { source, name } of sources) {
-      if (await fileExists(source)) await cp(source, path.join(pending, name), { recursive: true, force: true });
+      if (await fileExists(source)) await copyTree(source, path.join(pending, name));
     }
     if (await fileExists(this.manifestPath)) await copyFile(this.manifestPath, path.join(pending, "manifest.json"));
     const metadata: SnapshotMetadata = {
       schemaVersion: 1,
       createdAt: new Date().toISOString(),
       reason,
+      components,
       versions: {
         astrbot: normalizeComponentVersion(manifest.astrbotVersion),
         napcat: normalizeComponentVersion(manifest.napcatVersion),
@@ -1046,7 +1168,7 @@ export class NativeRuntimeManager {
     if (await fileExists(this.lastGoodSnapshotRoot)) await rename(this.lastGoodSnapshotRoot, previous);
     try {
       await rename(pending, this.lastGoodSnapshotRoot);
-      await this.removeManagedPath(previous);
+      void this.removeManagedPathBestEffort(previous);
     } catch (error) {
       if (!await fileExists(this.lastGoodSnapshotRoot) && await fileExists(previous)) {
         await rename(previous, this.lastGoodSnapshotRoot);
@@ -1071,7 +1193,7 @@ export class NativeRuntimeManager {
       if (!await fileExists(source)) continue;
       await this.removeManagedPath(target);
       await mkdir(path.dirname(target), { recursive: true });
-      await cp(source, target, { recursive: true, force: true });
+      await copyTree(source, target);
     }
     const snapshotManifest = path.join(this.lastGoodSnapshotRoot, "manifest.json");
     if (await fileExists(snapshotManifest)) await copyFile(snapshotManifest, this.manifestPath);
@@ -1214,31 +1336,35 @@ export class NativeRuntimeManager {
   ) {
     this.setProgress({ stage: "checking", component, percent, detail: `正在检查${label}下载源` });
     const health = await probeDownloadSources(sources);
-    const reachable = new Set(health.filter((item) => item.ok).map((item) => item.url));
-    const ordered = [...sources].sort((left, right) => Number(reachable.has(right.url)) - Number(reachable.has(left.url)));
-    const selected = ordered.find((source) => reachable.has(source.url));
+    const measurements = new Map(health.map((item) => [item.url, item]));
+    const ordered = orderDownloadSourcesByHealth(sources, health);
+    const selected = ordered.find((source) => measurements.get(source.url)?.ok);
+    const selectedHealth = selected ? measurements.get(selected.url) : null;
     this.setProgress({
       stage: "checking",
       component,
       percent,
-      detail: selected ? `${label}下载源可用：${selected.name}` : `${label}下载源预检失败，将在下载时继续重试`,
+      detail: selected
+        ? `${label}已选择较快下载源：${selected.name}${selectedHealth ? ` · ${selectedHealth.latencyMs} ms` : ""}`
+        : `${label}下载源预检失败，将在下载时继续重试`,
     });
     return ordered;
   }
 
-  private async ensureUv(force = false) {
-    const uvPath = path.join(this.binRoot, "uv.exe");
-    if (!force && await fileExists(uvPath)) return uvPath;
-
+  private async downloadUvArchive() {
     const assetName = COMPONENT_POLICY.uv.asset;
+    const archive = path.join(this.downloadsRoot, assetName);
+    if (await hasVerifiedDigest(archive, COMPONENT_POLICY.uv.sha256)) {
+      this.setProgress({ stage: "checking", component: "astrbot", percent: 15, detail: "Python 运行工具已通过校验，直接复用本地缓存" });
+      return archive;
+    }
     const sources = await this.prioritizeDownloadSources(
       "Python 运行工具",
       fallbackDownloadSources(COMPONENT_POLICY.uv),
       "astrbot",
       5,
     );
-    const archive = path.join(this.downloadsRoot, assetName);
-    await downloadFile(sources, archive, (downloaded, total, context) => {
+    const download = await downloadFile(sources, archive, (downloaded, total, context) => {
       const fraction = total ? downloaded / total : 0;
       this.setProgress({
         stage: "downloading",
@@ -1247,6 +1373,14 @@ export class NativeRuntimeManager {
         detail: `准备运行工具 ${formatMegabytes(downloaded)}${total ? ` / ${formatMegabytes(total)}` : ""} · ${context.source.name} · 第 ${context.attempt}/${context.maxAttempts} 次`,
       });
     }, { sha256: COMPONENT_POLICY.uv.sha256 });
+    if (download.cached) {
+      this.setProgress({ stage: "checking", component: "astrbot", percent: 15, detail: "Python 运行工具已通过校验，直接复用本地缓存" });
+    }
+    return archive;
+  }
+
+  private async installUvArchive(archive: string) {
+    const uvPath = path.join(this.binRoot, "uv.exe");
 
     const staging = path.join(this.runtimeDir, "staging-uv");
     await this.removeManagedPath(staging);
@@ -1262,6 +1396,12 @@ export class NativeRuntimeManager {
     manifest.policyVersion = COMPONENT_POLICY.policyVersion;
     await writeJson(this.manifestPath, manifest);
     return uvPath;
+  }
+
+  private async ensureUv(force = false, preparedArchive?: string) {
+    const uvPath = path.join(this.binRoot, "uv.exe");
+    if (!force && await fileExists(uvPath)) return uvPath;
+    return await this.installUvArchive(preparedArchive ?? await this.downloadUvArchive());
   }
 
   private async runInstallerCommand(
@@ -1355,13 +1495,13 @@ export class NativeRuntimeManager {
     await writeJson(this.manifestPath, manifest);
   }
 
-  private async prepareAstrBot(force = false) {
+  private async prepareAstrBot(force = false, forceUv = force, preparedUvArchive?: string) {
     const executable = path.join(this.binRoot, "astrbot.exe");
     if (!force && await fileExists(executable)) {
       await this.configureAstrBot(executable);
       return;
     }
-    const uvPath = await this.ensureUv(force);
+    const uvPath = await this.ensureUv(forceUv, preparedUvArchive);
     const configuredSources = COMPONENT_POLICY.astrbot.installSources ?? [{
       name: "PyPI 官方",
       indexUrl: "https://pypi.org/simple",
@@ -1372,10 +1512,14 @@ export class NativeRuntimeManager {
       name: source.name,
       url: `${source.indexUrl.replace(/\/$/, "")}/${COMPONENT_POLICY.astrbot.package}/`,
     })));
-    const reachable = new Set(sourceHealth.filter((item) => item.ok).map((item) => item.name));
-    const installSources = [...configuredSources].sort(
-      (left, right) => Number(reachable.has(right.name)) - Number(reachable.has(left.name)),
-    );
+    const measurements = new Map(sourceHealth.map((item) => [item.name, item]));
+    const installSources = [...configuredSources].sort((left, right) => {
+      const leftHealth = measurements.get(left.name);
+      const rightHealth = measurements.get(right.name);
+      if (leftHealth?.ok !== rightHealth?.ok) return Number(Boolean(rightHealth?.ok)) - Number(Boolean(leftHealth?.ok));
+      if (leftHealth?.ok && rightHealth?.ok) return leftHealth.latencyMs - rightHealth.latencyMs;
+      return 0;
+    });
     let installError: Error | null = null;
 
     for (const [index, source] of installSources.entries()) {
@@ -1438,21 +1582,19 @@ export class NativeRuntimeManager {
     }
   }
 
-  private async prepareNapCat(force = false) {
-    const executable = path.join(this.napcatRoot, "NapCatWinBootMain.exe");
-    if (!force && await fileExists(executable)) {
-      await this.configureNapCat();
-      return;
+  private async downloadNapCatArchive() {
+    const archive = path.join(this.downloadsRoot, `NapCat.Shell-${COMPONENT_POLICY.napcat.version}.zip`);
+    if (await hasVerifiedDigest(archive, COMPONENT_POLICY.napcat.sha256)) {
+      this.setProgress({ stage: "checking", component: "napcat", percent: 82, detail: "NapCat 安装包已通过校验，直接复用本地缓存" });
+      return archive;
     }
-
     const sources = await this.prioritizeDownloadSources(
       "NapCat",
       fallbackDownloadSources(COMPONENT_POLICY.napcat),
       "napcat",
       55,
     );
-    const archive = path.join(this.downloadsRoot, `NapCat.Shell-${COMPONENT_POLICY.napcat.version}.zip`);
-    await downloadFile(sources, archive, (downloaded, total, context) => {
+    const download = await downloadFile(sources, archive, (downloaded, total, context) => {
       const fraction = total ? downloaded / total : 0;
       this.setProgress({
         stage: "downloading",
@@ -1461,8 +1603,22 @@ export class NativeRuntimeManager {
         detail: `下载 NapCat ${formatMegabytes(downloaded)}${total ? ` / ${formatMegabytes(total)}` : ""} · ${context.source.name} · 第 ${context.attempt}/${context.maxAttempts} 次`,
       });
     }, { sha256: COMPONENT_POLICY.napcat.sha256 });
+    if (download.cached) {
+      this.setProgress({ stage: "checking", component: "napcat", percent: 82, detail: "NapCat 安装包已通过校验，直接复用本地缓存" });
+    }
+    return archive;
+  }
 
-    const staging = path.join(this.runtimeDir, "staging-napcat");
+  private async prepareNapCat(force = false, preparedArchive?: string) {
+    const executable = path.join(this.napcatRoot, "NapCatWinBootMain.exe");
+    if (!force && await fileExists(executable)) {
+      await this.configureNapCat();
+      return;
+    }
+
+    const archive = preparedArchive ?? await this.downloadNapCatArchive();
+
+    const staging = path.join(this.runtimeDir, `staging-napcat-${process.pid}-${Date.now()}`);
     await this.removeManagedPath(staging);
     await mkdir(staging, { recursive: true });
     this.setProgress({ stage: "installing", component: "napcat", percent: 84, detail: "正在安装 NapCat" });
@@ -1473,19 +1629,18 @@ export class NativeRuntimeManager {
     }
     await this.configureNapCat(staging);
 
-    const backup = path.join(this.runtimeDir, "backup-napcat");
-    await this.removeManagedPath(backup);
+    const backup = path.join(this.runtimeDir, `backup-napcat-${process.pid}-${Date.now()}`);
     const hadExistingInstall = await fileExists(this.napcatRoot);
     if (hadExistingInstall) await rename(this.napcatRoot, backup);
     try {
       await rename(staging, this.napcatRoot);
-      await this.removeManagedPath(backup);
     } catch (error) {
       if (!await fileExists(this.napcatRoot) && await fileExists(backup)) {
         await rename(backup, this.napcatRoot);
       }
       throw error;
     }
+    if (hadExistingInstall) void this.removeManagedPathBestEffort(backup);
 
     const manifest = await readJson<RuntimeManifest>(this.manifestPath, {});
     manifest.napcatVersion = COMPONENT_POLICY.napcat.version;
@@ -1604,6 +1759,28 @@ export class NativeRuntimeManager {
       : { ok: true, code: "QQ_REQUIRED", message: "AstrBot 与 NapCat 已准备完成，请继续安装 Windows QQ" } satisfies NativeActionResult;
   }
 
+  private async prepareMaintenanceComponents(
+    plan: ComponentMaintenancePlan,
+    prepared: { uvArchive?: string; napcatArchive?: string },
+  ) {
+    await this.initialize();
+    if (plan.uv) await this.ensureUv(true, prepared.uvArchive);
+    else await this.ensureUv(false);
+
+    if (plan.astrbot) await this.prepareAstrBot(true, false);
+
+    if (plan.napcat) await this.prepareNapCat(true, prepared.napcatArchive);
+
+    const manifest = await readJson<RuntimeManifest>(this.manifestPath, {});
+    manifest.policyVersion = COMPONENT_POLICY.policyVersion;
+    manifest.updatedAt = new Date().toISOString();
+    await writeJson(this.manifestPath, manifest);
+    const qqPath = await this.findQQPath();
+    return qqPath
+      ? { ok: true, message: "本机机器人组件已准备完成" }
+      : { ok: true, code: "QQ_REQUIRED", message: "组件已更新，请继续安装 Windows QQ" } satisfies NativeActionResult;
+  }
+
   private async validateCompatibilityInstall() {
     const manifest = await readJson<RuntimeManifest>(this.manifestPath, {});
     const expected = [
@@ -1646,37 +1823,68 @@ export class NativeRuntimeManager {
   }
 
   private async maintainCompatibleComponents(action: "update" | "repair"): Promise<NativeActionResult> {
-    const [manifest, preferences, records] = await Promise.all([
+    await this.initialize();
+    const [manifest, preferences, records, injectedQQPids] = await Promise.all([
       readJson<RuntimeManifest>(this.manifestPath, {}),
       this.ensurePreferences(),
       this.processRecords(),
+      this.managedNapCatQQProcesses(true),
     ]);
-    const nativeReady = await fileExists(path.join(this.binRoot, "astrbot.exe"))
-      && await fileExists(path.join(this.napcatRoot, "NapCatWinBootMain.exe"));
-    const versionsCurrent = normalizeComponentVersion(manifest.astrbotVersion) === normalizeComponentVersion(COMPONENT_POLICY.astrbot.version)
-      && normalizeComponentVersion(manifest.napcatVersion) === normalizeComponentVersion(COMPONENT_POLICY.napcat.version)
-      && normalizeComponentVersion(manifest.uvVersion) === normalizeComponentVersion(COMPONENT_POLICY.uv.version);
-    if (action === "update" && nativeReady && versionsCurrent) {
-      return { ok: true, code: "ALREADY_CURRENT", message: "组件已是当前稳定兼容版本，无需更新" };
+    const installed = {
+      astrbot: await fileExists(path.join(this.binRoot, "astrbot.exe")),
+      napcat: await fileExists(path.join(this.napcatRoot, "NapCatWinBootMain.exe")),
+      uv: await fileExists(path.join(this.binRoot, "uv.exe")),
+    };
+    const nativeReady = installed.astrbot && installed.napcat;
+    const plan = buildComponentMaintenancePlan(manifest, installed, action);
+    if (action === "update" && !plan.uv && !plan.astrbot && !plan.napcat) {
+      const message = "组件已是当前稳定兼容版本，无需更新";
+      this.setProgress({ stage: "complete", component: "runtime", percent: 100, detail: message });
+      return { ok: true, code: "ALREADY_CURRENT", message };
     }
 
     const wasRunning = await managedProcessRunning("astrbot", records.astrbot)
-      || await managedProcessRunning("napcat", records.napcat);
+      || await managedProcessRunning("napcat", records.napcat)
+      || injectedQQPids.length > 0;
     const shouldRestart = preferences.desiredRunning || wasRunning;
     const requireLiveValidation = wasRunning && await this.managementServicesHealthy();
-    await this.stopServices();
     const existingSnapshot = await this.getSnapshotMetadata();
-    const snapshot = nativeReady
-      ? action === "repair" && existingSnapshot
-        ? existingSnapshot
-        : await this.createCompatibilitySnapshot(action)
-      : null;
+    const prepared: { uvArchive?: string; napcatArchive?: string } = {};
+    let snapshot: SnapshotMetadata | null = null;
+    let servicesStopped = false;
+    let phase = "准备更新";
 
     try {
-      const result = await this.prepare(true);
+      phase = "下载安装资源";
+      if (plan.uv) prepared.uvArchive = await this.downloadUvArchive();
+      if (plan.napcat) prepared.napcatArchive = await this.downloadNapCatArchive();
+
+      phase = "安全停止旧组件";
+      this.setProgress({ stage: "waiting", component: "runtime", percent: 83, detail: "安装资源已就绪，正在安全停止旧组件" });
+      await this.stopServices();
+      servicesStopped = true;
+      await this.cleanupStaleMaintenanceDirectories();
+
+      phase = "创建升级快照";
+      this.setProgress({ stage: "installing", component: "runtime", percent: 85, detail: "正在创建升级前快照" });
+      const existingSnapshotIsComplete = existingSnapshot?.components === undefined
+        || (existingSnapshot.components.astrbot && existingSnapshot.components.napcat && existingSnapshot.components.uv);
+      snapshot = nativeReady
+        ? action === "repair" && existingSnapshot && existingSnapshotIsComplete
+          ? existingSnapshot
+          : await this.createCompatibilitySnapshot(action, plan)
+        : null;
+
+      phase = "安装新组件";
+      this.setProgress({ stage: "installing", component: "runtime", percent: 88, detail: "正在安装需要更新的组件" });
+      const result = await this.prepareMaintenanceComponents(plan, prepared);
       if (!result.ok) throw new Error(result.message);
+      phase = "校验组件版本与配置";
+      this.setProgress({ stage: "checking", component: "runtime", percent: 94, detail: "正在校验组件版本、启动文件与连接配置" });
       await this.validateCompatibilityInstall();
       if (shouldRestart) {
+        phase = "启动并探测新组件";
+        this.setProgress({ stage: "waiting", component: "runtime", percent: 96, detail: "新组件已安装，正在启动并探测管理服务" });
         const started = await this.startServices();
         if (!started.ok) throw new Error(started.message);
         if (requireLiveValidation && !await this.waitForManagementServices()) {
@@ -1686,29 +1894,46 @@ export class NativeRuntimeManager {
         await this.setDesiredRunning(false);
       }
       const message = action === "update"
-        ? "组件已更新到稳定兼容版本，升级前快照已保留"
+        ? `已更新 ${[
+          plan.astrbot ? "AstrBot" : null,
+          plan.napcat ? "NapCat" : null,
+          plan.uv ? "运行工具" : null,
+        ].filter(Boolean).join("、")}，升级前快照已保留`
         : "组件已按稳定兼容版本修复，配置与登录数据已保留";
       await this.recordCompatibilityOperation({ at: new Date().toISOString(), action, status: "success", message });
       this.setProgress({ stage: "complete", component: "runtime", percent: 100, detail: message });
       return { ok: true, code: result.code, message };
     } catch (error) {
-      const failure = error instanceof Error ? error.message : "组件维护失败";
+      const reason = error instanceof Error ? error.message : "组件维护失败";
+      const failure = `${phase}失败：${reason}`;
       if (snapshot) {
         await this.stopServices();
         await this.restoreCompatibilitySnapshotFiles();
         let restartMessage = "";
         if (shouldRestart) {
           const restarted = await this.startServices();
-          restartMessage = restarted.ok ? "，旧版本已重新启动" : `，但旧版本重新启动失败：${restarted.message}`;
+          if (restarted.ok && requireLiveValidation) {
+            const healthy = await this.waitForManagementServices(30_000);
+            restartMessage = healthy ? "，旧版本已重新启动并恢复健康" : "，旧版本已启动，但管理服务尚未恢复";
+          } else {
+            restartMessage = restarted.ok ? "，旧版本已重新启动" : `，但旧版本重新启动失败：${restarted.message}`;
+          }
         } else {
           await this.setDesiredRunning(false);
         }
-        const message = `新组件验收失败：${failure}；已自动回滚${restartMessage}`;
+        const message = `${failure}；已自动回滚${restartMessage}`;
         await this.recordCompatibilityOperation({ at: new Date().toISOString(), action, status: "rolled-back", message });
         this.setProgress({ stage: "error", component: "runtime", percent: 100, detail: message });
         return { ok: false, code: "ROLLED_BACK", message };
       }
-      const message = `${failure}；没有可回滚的旧组件快照`;
+      let continuity = "";
+      if (servicesStopped && shouldRestart) {
+        const restarted = await this.startServices();
+        continuity = restarted.ok ? "；旧组件未被修改，已重新启动" : `；旧组件未被修改，但重新启动失败：${restarted.message}`;
+      } else if (!servicesStopped) {
+        continuity = "；操作在修改组件前终止，现有版本未受影响";
+      }
+      const message = `${failure}${continuity}${nativeReady ? "" : "；没有可回滚的旧组件快照"}`;
       await this.recordCompatibilityOperation({ at: new Date().toISOString(), action, status: "failed", message });
       throw new Error(message);
     }
@@ -1716,10 +1941,15 @@ export class NativeRuntimeManager {
 
   private async rollbackCompatibleComponents(): Promise<NativeActionResult> {
     if (!await this.getSnapshotMetadata()) return { ok: false, code: "NO_SNAPSHOT", message: "还没有可回滚的组件快照" };
-    const [preferences, records] = await Promise.all([this.ensurePreferences(), this.processRecords()]);
+    const [preferences, records, injectedQQPids] = await Promise.all([
+      this.ensurePreferences(),
+      this.processRecords(),
+      this.managedNapCatQQProcesses(true),
+    ]);
     const shouldRestart = preferences.desiredRunning
       || await managedProcessRunning("astrbot", records.astrbot)
-      || await managedProcessRunning("napcat", records.napcat);
+      || await managedProcessRunning("napcat", records.napcat)
+      || injectedQQPids.length > 0;
     await this.stopServices();
     const metadata = await this.restoreCompatibilitySnapshotFiles();
     if (shouldRestart) {
@@ -1741,6 +1971,67 @@ export class NativeRuntimeManager {
 
   private async saveProcessRecords(records: ProcessRecord) {
     await writeJson(this.processesPath, records);
+  }
+
+  private async managedNapCatQQProcesses(forceRefresh = false) {
+    if (process.platform !== "win32") return [];
+    if (!forceRefresh && Date.now() - this.napcatQQProcessCache.checkedAt < 10_000) {
+      return this.napcatQQProcessCache.pids;
+    }
+    const command = [
+      "$root=[IO.Path]::GetFullPath($env:ROSEMEWBOT_RUNTIME_ROOT).TrimEnd('\\')+'\\'",
+      "Get-Process -Name QQ -ErrorAction SilentlyContinue | ForEach-Object {",
+      "try { foreach ($module in $_.Modules) {",
+      "if ($module.ModuleName -ieq 'NapCatWinBootHook.dll' -and $module.FileName.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)) { $_.Id; break }",
+      "} } catch {}",
+      "}",
+    ].join("; ");
+    try {
+      const result = await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], {
+        windowsHide: true,
+        timeout: 10_000,
+        env: { ...process.env, ROSEMEWBOT_RUNTIME_ROOT: this.runtimeDir },
+      });
+      const pids = parseProcessIds(result.stdout);
+      this.napcatQQProcessCache = { checkedAt: Date.now(), pids };
+      return pids;
+    } catch {
+      return [];
+    }
+  }
+
+  private async killProcessTree(pid: number, force: boolean) {
+    try {
+      await execFileAsync("taskkill.exe", ["/pid", String(pid), "/t", ...(force ? ["/f"] : [])], {
+        windowsHide: true,
+        timeout: 20_000,
+      });
+    } catch {
+      // It may have already exited, or a graceful close may require the forced retry below.
+    }
+  }
+
+  private async stopManagedNapCatQQ() {
+    let pids = await this.managedNapCatQQProcesses(true);
+    if (pids.length === 0) return;
+
+    this.setProgress({ stage: "waiting", component: "napcat", percent: this.progress.percent, detail: "正在关闭 NapCat 关联的 QQ 进程并释放组件文件" });
+    await Promise.all(pids.map((pid) => this.killProcessTree(pid, false)));
+    const gracefulDeadline = Date.now() + 2_500;
+    while (Date.now() < gracefulDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      pids = await this.managedNapCatQQProcesses(true);
+      if (pids.length === 0) return;
+    }
+
+    await Promise.all(pids.map((pid) => this.killProcessTree(pid, true)));
+    const forcedDeadline = Date.now() + 8_000;
+    while (Date.now() < forcedDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      pids = await this.managedNapCatQQProcesses(true);
+      if (pids.length === 0) return;
+    }
+    throw new Error(`NapCat 关联的 QQ 进程未能退出（PID ${pids.join("、")}），组件文件仍被占用`);
   }
 
   private async launchDetached(service: NativeServiceId, executable: string, args: string[], cwd: string, env = process.env) {
@@ -1793,7 +2084,9 @@ export class NativeRuntimeManager {
       await this.launchAstrBot(astrbotExecutable);
     }
 
-    if (!await managedProcessRunning("napcat", records.napcat)) {
+    const napcatRunning = await managedProcessRunning("napcat", records.napcat)
+      || (await this.managedNapCatQQProcesses(true)).length > 0;
+    if (!napcatRunning) {
       const mainModule = path.join(this.napcatRoot, "napcat.mjs");
       const loadPath = path.join(this.napcatRoot, "loadNapCat.js");
       const importUrl = pathToFileURL(mainModule).href;
@@ -1812,6 +2105,7 @@ export class NativeRuntimeManager {
         preferences.autoLoginAccount,
       );
       await this.launchDetached("napcat", napcatExecutable, napcatArgs, this.napcatRoot, napcatEnv);
+      this.napcatQQProcessCache.checkedAt = 0;
     }
     await this.setDesiredRunning(true);
     return preferences.autoLoginAccount
@@ -1823,12 +2117,9 @@ export class NativeRuntimeManager {
     const records = await this.processRecords();
     const pid = records[service];
     if (await managedProcessRunning(service, pid)) {
-      try {
-        await execFileAsync("taskkill.exe", ["/pid", String(pid), "/t", "/f"], { windowsHide: true, timeout: 20_000 });
-      } catch {
-        // The process may have exited between the status check and taskkill.
-      }
+      await this.killProcessTree(pid!, true);
     }
+    if (service === "napcat") await this.stopManagedNapCatQQ();
     delete records[service];
     if (records.startedAt) {
       delete records.startedAt[service];
@@ -1893,6 +2184,7 @@ export class NativeRuntimeManager {
   async runAction(action: NativeAction): Promise<NativeActionResult> {
     if (this.busy) return { ok: false, message: "已有操作正在进行，请稍候" };
     this.busy = true;
+    this.progressFloor = 0;
     try {
       if (action === "install") return await this.prepare(false);
       if (action === "install-qq") return await this.installQQ();
@@ -1921,20 +2213,22 @@ export class NativeRuntimeManager {
 
   async getState(): Promise<NativeRuntimeState> {
     await this.initialize();
-    const [qqPath, qqVersion, records, manifest, preferences] = await Promise.all([
+    const [qqPath, qqVersion, records, manifest, preferences, injectedQQPids] = await Promise.all([
       this.findQQPath(),
       this.getQQVersion(),
       this.processRecords(),
       readJson<RuntimeManifest>(this.manifestPath, {}),
       this.getPreferences(),
+      this.managedNapCatQQProcesses(),
     ]);
     const astrbotInstalled = await fileExists(path.join(this.binRoot, "astrbot.exe"));
     const napcatInstalled = await fileExists(path.join(this.napcatRoot, "NapCatWinBootMain.exe"));
     const uvInstalled = await fileExists(path.join(this.binRoot, "uv.exe"));
-    const [astrbotRunning, napcatRunning] = await Promise.all([
+    const [astrbotRunning, napcatLauncherRunning] = await Promise.all([
       managedProcessRunning("astrbot", records.astrbot),
       managedProcessRunning("napcat", records.napcat),
     ]);
+    const napcatRunning = napcatLauncherRunning || injectedQQPids.length > 0;
     const runningCount = [astrbotRunning, napcatRunning].filter(Boolean).length;
     const nativeReady = astrbotInstalled && napcatInstalled;
     const stackState = !nativeReady
@@ -2234,7 +2528,9 @@ export class NativeRuntimeManager {
 
   async getQQLoginAccounts(): Promise<NapCatQuickLoginAccount[]> {
     const records = await this.processRecords();
-    if (!await managedProcessRunning("napcat", records.napcat)) {
+    const napcatRunning = await managedProcessRunning("napcat", records.napcat)
+      || (await this.managedNapCatQQProcesses()).length > 0;
+    if (!napcatRunning) {
       throw new Error("NapCat 尚未运行，请先启动机器人后再刷新账号");
     }
     const napcatToken = await this.getNapCatToken();

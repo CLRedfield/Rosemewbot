@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   COMPONENT_POLICY,
   NativeRuntimeManager,
+  buildComponentMaintenancePlan,
   buildNapCatLaunchArgs,
   buildNapCatOneBotConfig,
   buildNapCatWebUiConfig,
@@ -23,8 +24,10 @@ import {
   isValidDashboardPassword,
   verifyAstrBotDashboardPassword,
   isValidQQAccount,
+  orderDownloadSourcesByHealth,
   parseQQDisplayVersion,
   parseNetstatConnections,
+  parseProcessIds,
   parseQQInstallPath,
   probeDownloadSources,
   reconcileAstrBotConfig,
@@ -207,6 +210,27 @@ describe("Windows native runtime configuration", () => {
     expect(parseQQDisplayVersion("    DisplayVersion    REG_SZ    9.9.26.44343")).toBe("9.9.26.44343");
   });
 
+  it("updates only components that differ from the stable policy", () => {
+    expect(buildComponentMaintenancePlan({
+      astrbotVersion: "4.27.2",
+      napcatVersion: COMPONENT_POLICY.napcat.version,
+      uvVersion: COMPONENT_POLICY.uv.version,
+    }, { astrbot: true, napcat: true, uv: true }, "update")).toEqual({
+      astrbot: true,
+      napcat: false,
+      uv: false,
+    });
+    expect(buildComponentMaintenancePlan({}, { astrbot: false, napcat: false, uv: false }, "repair")).toEqual({
+      astrbot: true,
+      napcat: true,
+      uv: true,
+    });
+  });
+
+  it("parses unique positive process IDs from PowerShell output", () => {
+    expect(parseProcessIds("21232\r\n49576\r\n21232\r\ninvalid\r\n0\r\n")).toEqual([21232, 49576]);
+  });
+
   it("uses locked direct URLs without requiring the GitHub releases API", () => {
     expect(buildGitHubReleaseDownloadUrl("NapNeko/NapCatQQ", "v4.18.19", "NapCat.Shell.zip")).toBe(
       "https://github.com/NapNeko/NapCatQQ/releases/download/v4.18.19/NapCat.Shell.zip",
@@ -249,7 +273,7 @@ describe("Windows native runtime configuration", () => {
       ]);
 
       const target = path.join(userDataDir, "component.zip");
-      await downloadFile([primary, fallback], target, () => undefined, {
+      const firstDownload = await downloadFile([primary, fallback], target, () => undefined, {
         sha256: createHash("sha256").update(payload).digest("hex"),
         maxAttempts: 3,
         retryDelaysMs: [0, 0],
@@ -257,10 +281,29 @@ describe("Windows native runtime configuration", () => {
         totalTimeoutMs: 2_000,
       });
 
+      expect(firstDownload).toMatchObject({ cached: false, source: fallback });
       await expect(readFile(target)).resolves.toEqual(payload);
       await expect(readFile(`${target}.part`)).rejects.toMatchObject({ code: "ENOENT" });
       expect(requests.filter((url) => url === "/primary").length).toBeGreaterThanOrEqual(2);
       expect(requests).toContain("/fallback");
+
+      const requestsAfterDownload = requests.length;
+      const cachedDownload = await downloadFile([primary, fallback], target, () => undefined, {
+        sha256: createHash("sha256").update(payload).digest("hex"),
+      });
+      expect(cachedDownload).toEqual({ cached: true, source: null });
+      expect(requests).toHaveLength(requestsAfterDownload);
+
+      await writeFile(target, "corrupted cache", "utf8");
+      const replacement = await downloadFile([fallback], target, () => undefined, {
+        sha256: createHash("sha256").update(payload).digest("hex"),
+        retryDelaysMs: [0],
+        inactivityTimeoutMs: 1_000,
+        totalTimeoutMs: 2_000,
+      });
+      expect(replacement.cached).toBe(false);
+      await expect(readFile(target)).resolves.toEqual(payload);
+      expect(requests.length).toBeGreaterThan(requestsAfterDownload);
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
@@ -308,5 +351,39 @@ describe("Windows native runtime configuration", () => {
     await expect(readFile(files.astrbotData, "utf8")).resolves.toBe("old-data");
     await expect(readFile(files.napcatMarker, "utf8")).resolves.toBe("old-napcat");
     await expect(readFile(files.toolMarker, "utf8")).resolves.toBe("old-tools");
+  });
+
+  it("prefers a healthy lower-latency download source", () => {
+    const slow = { name: "慢源", url: "https://slow.example/component.zip" };
+    const fast = { name: "快源", url: "https://fast.example/component.zip" };
+    const unavailable = { name: "不可用源", url: "https://down.example/component.zip" };
+    expect(orderDownloadSourcesByHealth([slow, unavailable, fast], [
+      { ...slow, ok: true, latencyMs: 800, statusCode: 206, finalUrl: slow.url, error: null },
+      { ...unavailable, ok: false, latencyMs: 10, statusCode: 503, finalUrl: null, error: "HTTP 503" },
+      { ...fast, ok: true, latencyMs: 80, statusCode: 206, finalUrl: fast.url, error: null },
+    ])).toEqual([fast, slow, unavailable]);
+  });
+
+  it("omits unrelated environments from a component-specific snapshot", async () => {
+    const userDataDir = await mkdtemp(path.join(os.tmpdir(), "rosemewbot-partial-snapshot-"));
+    temporaryDirectories.push(userDataDir);
+    const manager = new NativeRuntimeManager(userDataDir);
+    await manager.initialize();
+    const runtimeDir = manager.runtimeDir;
+    await Promise.all([
+      mkdir(path.join(runtimeDir, "napcat"), { recursive: true }),
+      mkdir(path.join(runtimeDir, "tools"), { recursive: true }),
+      writeFile(path.join(runtimeDir, "manifest.json"), JSON.stringify({ napcatVersion: "v4.18.13" }), "utf8"),
+    ]);
+    await Promise.all([
+      writeFile(path.join(runtimeDir, "napcat", "NapCatWinBootMain.exe"), "launcher", "utf8"),
+      writeFile(path.join(runtimeDir, "tools", "large-environment.txt"), "keep-live", "utf8"),
+    ]);
+
+    await manager.createCompatibilitySnapshot("update", { astrbot: false, napcat: true, uv: false });
+    await expect(readFile(path.join(runtimeDir, "snapshots", "last-good", "napcat", "NapCatWinBootMain.exe"), "utf8"))
+      .resolves.toBe("launcher");
+    await expect(readFile(path.join(runtimeDir, "snapshots", "last-good", "tools", "large-environment.txt"), "utf8"))
+      .rejects.toMatchObject({ code: "ENOENT" });
   });
 });

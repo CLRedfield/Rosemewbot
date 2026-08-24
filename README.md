@@ -9,7 +9,7 @@
 构建产物：
 
 ```text
-release/Rosemewbot-Setup-0.6.2-x64.exe
+release/Rosemewbot-Setup-0.6.3-x64.exe
 ```
 
 用户流程只有三步：
@@ -95,7 +95,7 @@ npm run desktop:dir
 - 组件下载来自官方发布源；带摘要的 GitHub 资源会校验 SHA-256。
 - 自动下载的 QQ 安装程序必须通过 Windows Authenticode 验证，且签名者必须为 Tencent。
 - 日志返回界面前会移除本机密码与 Token。
-- 停止组件前会核对进程名，避免因旧 PID 误终止其他程序。
+- 停止组件前会核对进程名；关闭 NapCat 关联 QQ 时还会确认其加载的是 Rosemewbot 私有目录中的 Hook DLL，避免因旧 PID 误终止其他程序。
 - 一键完全卸载必须经过原生确认框，只调用已安装目录中的卸载程序，并使用专用参数清理相邻数据与旧版残留。
 
 ## 当前阶段未包含
