@@ -1,5 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createHash, pbkdf2Sync } from "node:crypto";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 
@@ -11,6 +13,8 @@ import {
   buildNapCatLaunchArgs,
   buildNapCatOneBotConfig,
   buildNapCatWebUiConfig,
+  buildGitHubReleaseDownloadUrl,
+  downloadFile,
   findNapCatAccountFromNames,
   getComponentCompatibilityStatus,
   getAstrBotCredentialState,
@@ -22,6 +26,7 @@ import {
   parseQQDisplayVersion,
   parseNetstatConnections,
   parseQQInstallPath,
+  probeDownloadSources,
   reconcileAstrBotConfig,
   reconcileNapCatOneBotConfig,
 } from "../desktop/native-runtime";
@@ -196,10 +201,69 @@ describe("Windows native runtime configuration", () => {
   });
 
   it("evaluates locked component and QQ versions", () => {
-    expect(getComponentCompatibilityStatus("AstrBot v4.27.2", COMPONENT_POLICY.astrbot.version, true)).toBe("compatible");
+    expect(getComponentCompatibilityStatus("AstrBot v4.27.3", COMPONENT_POLICY.astrbot.version, true)).toBe("compatible");
     expect(getComponentCompatibilityStatus("4.26.0", COMPONENT_POLICY.astrbot.version, true)).toBe("update-available");
     expect(getComponentCompatibilityStatus(null, COMPONENT_POLICY.astrbot.version, true)).toBe("unknown");
     expect(parseQQDisplayVersion("    DisplayVersion    REG_SZ    9.9.26.44343")).toBe("9.9.26.44343");
+  });
+
+  it("uses locked direct URLs without requiring the GitHub releases API", () => {
+    expect(buildGitHubReleaseDownloadUrl("NapNeko/NapCatQQ", "v4.18.19", "NapCat.Shell.zip")).toBe(
+      "https://github.com/NapNeko/NapCatQQ/releases/download/v4.18.19/NapCat.Shell.zip",
+    );
+    expect(COMPONENT_POLICY.uv.downloadSources?.map((source) => source.name)).toEqual([
+      "GitHub 官方",
+      "Astral 官方分发",
+    ]);
+    expect(COMPONENT_POLICY.napcat.downloadSources?.[0]?.url).not.toContain("api.github.com");
+  });
+
+  it("probes real download responses and falls back to a healthy source", async () => {
+    const userDataDir = await mkdtemp(path.join(os.tmpdir(), "rosemewbot-download-"));
+    temporaryDirectories.push(userDataDir);
+    const payload = Buffer.from("verified component archive", "utf8");
+    const requests: string[] = [];
+    const server = createServer((request, response) => {
+      requests.push(request.url ?? "/");
+      if (request.url === "/primary") {
+        response.writeHead(503, { "Retry-After": "0" });
+        response.end("temporarily unavailable");
+        return;
+      }
+      response.writeHead(request.headers.range ? 206 : 200, {
+        "Content-Length": request.headers.range ? 1 : payload.length,
+        "Content-Range": `bytes 0-${request.headers.range ? 0 : payload.length - 1}/${payload.length}`,
+      });
+      response.end(request.headers.range ? payload.subarray(0, 1) : payload);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+    try {
+      const { port } = server.address() as AddressInfo;
+      const primary = { name: "主源", url: `http://127.0.0.1:${port}/primary` };
+      const fallback = { name: "备用源", url: `http://127.0.0.1:${port}/fallback` };
+      const health = await probeDownloadSources([primary, fallback], 2_000);
+      expect(health).toEqual([
+        expect.objectContaining({ name: "主源", ok: false, statusCode: 503 }),
+        expect.objectContaining({ name: "备用源", ok: true, statusCode: 206 }),
+      ]);
+
+      const target = path.join(userDataDir, "component.zip");
+      await downloadFile([primary, fallback], target, () => undefined, {
+        sha256: createHash("sha256").update(payload).digest("hex"),
+        maxAttempts: 3,
+        retryDelaysMs: [0, 0],
+        inactivityTimeoutMs: 1_000,
+        totalTimeoutMs: 2_000,
+      });
+
+      await expect(readFile(target)).resolves.toEqual(payload);
+      await expect(readFile(`${target}.part`)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(requests.filter((url) => url === "/primary").length).toBeGreaterThanOrEqual(2);
+      expect(requests).toContain("/fallback");
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
   });
 
   it("restores component files from the last-good snapshot", async () => {

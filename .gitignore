@@ -9,4 +9,6 @@ coverage/
 artifacts/
 release/
 dist-electron/
+__pycache__/
+*.py[cod]
 Rosemewbot_游戏社群助手_V1.0_产品设计案.md

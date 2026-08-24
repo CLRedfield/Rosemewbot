@@ -16,6 +16,7 @@ import {
 import http from "node:http";
 import https from "node:https";
 import path from "node:path";
+import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 
@@ -158,6 +159,39 @@ interface GitHubRelease {
   assets: GitHubAsset[];
 }
 
+export interface DownloadSource {
+  name: string;
+  url: string;
+}
+
+export interface DownloadProgressContext {
+  attempt: number;
+  maxAttempts: number;
+  source: DownloadSource;
+}
+
+export interface DownloadFileOptions {
+  sha256?: string;
+  maxAttempts?: number;
+  inactivityTimeoutMs?: number;
+  totalTimeoutMs?: number;
+  retryDelaysMs?: number[];
+}
+
+export interface DownloadSourceHealth extends DownloadSource {
+  ok: boolean;
+  latencyMs: number;
+  statusCode: number | null;
+  finalUrl: string | null;
+  error: string | null;
+}
+
+interface AstrBotInstallSource {
+  name: string;
+  indexUrl: string;
+  pythonSource: string;
+}
+
 export interface CompatibilityOperation {
   at: string;
   action: "update" | "repair" | "rollback";
@@ -212,15 +246,15 @@ export const COMPONENT_POLICY = componentLock as {
   policyVersion: string;
   channel: "stable";
   testedAt: string;
-  python: { version: string };
-  uv: { repository: string; version: string; asset: string; sha256: string };
-  astrbot: { package: string; version: string };
-  napcat: { repository: string; version: string; asset: string; sha256: string };
+  python: { version: string; installSources?: Array<{ name: string; mirrorUrl: string }> };
+  uv: { repository: string; version: string; asset: string; sha256: string; downloadSources?: DownloadSource[] };
+  astrbot: { package: string; version: string; installSources?: AstrBotInstallSource[] };
+  napcat: { repository: string; version: string; asset: string; sha256: string; downloadSources?: DownloadSource[] };
   qq: { minimumBuild: number; testedBuild: number; downloadUrl: string };
 };
 const githubHeaders = {
   Accept: "application/vnd.github+json",
-  "User-Agent": "Rosemewbot-Native/0.6.1",
+  "User-Agent": "Rosemewbot-Native/0.6.2",
   "X-GitHub-Api-Version": "2022-11-28",
 };
 const managedNapCatConnectionName = "Rosemewbot · AstrBot";
@@ -551,13 +585,6 @@ async function writeJson(target: string, value: unknown) {
   await writeFile(target, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
 }
 
-async function githubRelease(repository: string, tag?: string): Promise<GitHubRelease> {
-  const suffix = tag ? `/releases/tags/${encodeURIComponent(tag)}` : "/releases/latest";
-  const response = await fetch(`https://api.github.com/repos/${repository}${suffix}`, { headers: githubHeaders });
-  if (!response.ok) throw new Error(`GitHub 返回 HTTP ${response.status}`);
-  return await response.json() as GitHubRelease;
-}
-
 async function sha256(target: string) {
   const hash = createHash("sha256");
   hash.update(await readFile(target));
@@ -581,45 +608,258 @@ async function verifyLockedDigest(target: string, expected: string, published?: 
   await verifyDigest(target, `sha256:${normalizedExpected}`);
 }
 
-function downloadFile(
+class DownloadRequestError extends Error {
+  constructor(
+    message: string,
+    readonly retryable = true,
+    readonly retryAfterMs = 0,
+    readonly statusCode: number | null = null,
+  ) {
+    super(message);
+    this.name = "DownloadRequestError";
+  }
+}
+
+function retryAfterMilliseconds(value?: string) {
+  if (!value) return 0;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1_000);
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.max(0, date - Date.now()) : 0;
+}
+
+function normalizeDownloadError(error: unknown) {
+  if (error instanceof DownloadRequestError) return error;
+  const message = error instanceof Error ? error.message : "未知下载错误";
+  return new DownloadRequestError(message);
+}
+
+function uniqueDownloadSources(sources: DownloadSource[]) {
+  const seen = new Set<string>();
+  return sources.filter((source) => {
+    if (!source.url || seen.has(source.url)) return false;
+    seen.add(source.url);
+    return true;
+  });
+}
+
+export function buildGitHubReleaseDownloadUrl(repository: string, version: string, asset: string) {
+  return `https://github.com/${repository}/releases/download/${encodeURIComponent(version)}/${encodeURIComponent(asset)}`;
+}
+
+function fallbackDownloadSources(component: { repository: string; version: string; asset: string; downloadSources?: DownloadSource[] }) {
+  const configured = uniqueDownloadSources(component.downloadSources ?? []);
+  return configured.length > 0
+    ? configured
+    : [{ name: "GitHub 官方", url: buildGitHubReleaseDownloadUrl(component.repository, component.version, component.asset) }];
+}
+
+async function probeDownloadSource(source: DownloadSource, timeoutMs: number): Promise<DownloadSourceHealth> {
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+
+  const probe = (url: string, redirectCount = 0): Promise<{ statusCode: number; finalUrl: string }> => new Promise((resolve, reject) => {
+    if (redirectCount > 8) {
+      reject(new DownloadRequestError("重定向次数过多", false));
+      return;
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      reject(new DownloadRequestError("连接检查超时"));
+      return;
+    }
+
+    const transport = url.startsWith("https:") ? https : http;
+    let settled = false;
+    const request = transport.get(url, {
+      headers: {
+        ...githubHeaders,
+        Range: "bytes=0-0",
+        "Accept-Encoding": "identity",
+      },
+    }, (response) => {
+      const statusCode = response.statusCode ?? 0;
+      if (statusCode >= 300 && statusCode < 400 && response.headers.location) {
+        settled = true;
+        clearTimeout(totalTimer);
+        response.resume();
+        const nextUrl = new URL(response.headers.location, url).toString();
+        void probe(nextUrl, redirectCount + 1).then(resolve, reject);
+        return;
+      }
+      if (statusCode !== 200 && statusCode !== 206) {
+        settled = true;
+        clearTimeout(totalTimer);
+        response.resume();
+        reject(new DownloadRequestError(`HTTP ${statusCode || "unknown"}`, false, 0, statusCode || null));
+        return;
+      }
+
+      const succeed = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(totalTimer);
+        response.destroy();
+        resolve({ statusCode, finalUrl: url });
+      };
+      response.once("data", succeed);
+      response.once("end", succeed);
+      response.once("error", (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(totalTimer);
+        reject(error);
+      });
+    });
+    const totalTimer = setTimeout(() => request.destroy(new DownloadRequestError("连接检查超时")), remaining);
+    request.once("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(totalTimer);
+      reject(error);
+    });
+  });
+
+  try {
+    const result = await probe(source.url);
+    return {
+      ...source,
+      ok: true,
+      latencyMs: Date.now() - startedAt,
+      statusCode: result.statusCode,
+      finalUrl: result.finalUrl,
+      error: null,
+    };
+  } catch (error) {
+    const normalized = normalizeDownloadError(error);
+    return {
+      ...source,
+      ok: false,
+      latencyMs: Date.now() - startedAt,
+      statusCode: normalized.statusCode,
+      finalUrl: null,
+      error: normalized.message,
+    };
+  }
+}
+
+export async function probeDownloadSources(sources: DownloadSource[], timeoutMs = 8_000) {
+  return await Promise.all(uniqueDownloadSources(sources).map((source) => probeDownloadSource(source, timeoutMs)));
+}
+
+function downloadOnce(
   url: string,
   target: string,
   onProgress: (downloaded: number, total: number | null) => void,
+  inactivityTimeoutMs: number,
+  deadline: number,
   redirectCount = 0,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     if (redirectCount > 8) {
-      reject(new Error("下载重定向次数过多"));
+      reject(new DownloadRequestError("下载重定向次数过多", false));
+      return;
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      reject(new DownloadRequestError("下载总耗时超过限制"));
       return;
     }
     const transport = url.startsWith("https:") ? https : http;
+    let settled = false;
+    let output: ReturnType<typeof createWriteStream> | null = null;
+    const finish = (error?: unknown) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(totalTimer);
+      if (error) {
+        output?.destroy();
+        reject(error);
+      } else {
+        resolve();
+      }
+    };
     const request = transport.get(url, { headers: githubHeaders }, (response) => {
       if (response.statusCode && response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+        settled = true;
+        clearTimeout(totalTimer);
         response.resume();
         const nextUrl = new URL(response.headers.location, url).toString();
-        void downloadFile(nextUrl, target, onProgress, redirectCount + 1).then(resolve, reject);
+        void downloadOnce(nextUrl, target, onProgress, inactivityTimeoutMs, deadline, redirectCount + 1).then(resolve, reject);
         return;
       }
       if (response.statusCode !== 200) {
         response.resume();
-        reject(new Error(`下载失败：HTTP ${response.statusCode ?? "unknown"}`));
+        const statusCode = response.statusCode ?? 0;
+        const retryable = statusCode === 408 || statusCode === 429 || statusCode >= 500;
+        finish(new DownloadRequestError(
+          `HTTP ${statusCode || "unknown"}`,
+          retryable,
+          retryAfterMilliseconds(response.headers["retry-after"]),
+          statusCode || null,
+        ));
         return;
       }
       const total = response.headers["content-length"] ? Number(response.headers["content-length"]) : null;
       let downloaded = 0;
-      const output = createWriteStream(target);
+      output = createWriteStream(target, { flags: "w" });
       response.on("data", (chunk: Buffer) => {
         downloaded += chunk.length;
         onProgress(downloaded, total);
       });
-      response.once("error", reject);
-      output.once("error", reject);
-      output.once("finish", () => output.close(() => resolve()));
-      response.pipe(output);
+      void pipeline(response, output).then(() => finish(), finish);
     });
-    request.setTimeout(120_000, () => request.destroy(new Error("下载连接超时")));
-    request.once("error", reject);
+    const totalTimer = setTimeout(() => request.destroy(new DownloadRequestError("下载总耗时超过限制")), remaining);
+    request.setTimeout(inactivityTimeoutMs, () => request.destroy(new DownloadRequestError("下载连接长时间没有收到数据")));
+    request.once("error", finish);
   });
+}
+
+export async function downloadFile(
+  sources: DownloadSource[],
+  target: string,
+  onProgress: (downloaded: number, total: number | null, context: DownloadProgressContext) => void,
+  options: DownloadFileOptions = {},
+) {
+  let candidates = uniqueDownloadSources(sources);
+  if (candidates.length === 0) throw new Error("没有配置可用的下载地址");
+
+  const maxAttempts = Math.max(1, options.maxAttempts ?? 3);
+  const inactivityTimeoutMs = Math.max(1_000, options.inactivityTimeoutMs ?? 60_000);
+  const totalTimeoutMs = Math.max(inactivityTimeoutMs, options.totalTimeoutMs ?? 15 * 60_000);
+  const retryDelaysMs = options.retryDelaysMs ?? [1_000, 3_000, 8_000];
+  const partial = `${target}.part`;
+  let lastError: DownloadRequestError | null = null;
+  let lastSource: DownloadSource | null = null;
+  let attemptsMade = 0;
+
+  for (let attempt = 1; attempt <= maxAttempts && candidates.length > 0; attempt += 1) {
+    const source = candidates[(attempt - 1) % candidates.length];
+    const context = { attempt, maxAttempts, source };
+    attemptsMade = attempt;
+    lastSource = source;
+    await rm(partial, { force: true });
+    onProgress(0, null, context);
+
+    try {
+      await downloadOnce(source.url, partial, (downloaded, total) => onProgress(downloaded, total, context), inactivityTimeoutMs, Date.now() + totalTimeoutMs);
+      if (options.sha256) await verifyDigest(partial, `sha256:${options.sha256.replace(/^sha256:/i, "")}`);
+      await rm(target, { force: true });
+      await rename(partial, target);
+      return;
+    } catch (error) {
+      lastError = normalizeDownloadError(error);
+      if (!lastError.retryable) candidates = candidates.filter((candidate) => candidate.url !== source.url);
+      if (attempt >= maxAttempts || candidates.length === 0) break;
+      const requestedDelay = lastError.retryAfterMs || retryDelaysMs[Math.min(attempt - 1, retryDelaysMs.length - 1)] || 0;
+      const baseDelay = Math.min(30_000, requestedDelay);
+      const jitter = baseDelay > 0 ? Math.floor(Math.random() * Math.min(250, baseDelay * 0.2)) : 0;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, baseDelay + jitter));
+    }
+  }
+
+  const sourceLabel = lastSource ? `${lastSource.name}（${new URL(lastSource.url).hostname}）` : "下载源";
+  throw new Error(`下载失败（已尝试 ${attemptsMade} 次）：${sourceLabel}：${lastError?.message ?? "未知错误"}`);
 }
 
 async function managedProcessRunning(service: NativeServiceId, pid?: number) {
@@ -966,27 +1206,47 @@ export class NativeRuntimeManager {
     };
   }
 
+  private async prioritizeDownloadSources(
+    label: string,
+    sources: DownloadSource[],
+    component: InstallProgress["component"],
+    percent: number,
+  ) {
+    this.setProgress({ stage: "checking", component, percent, detail: `正在检查${label}下载源` });
+    const health = await probeDownloadSources(sources);
+    const reachable = new Set(health.filter((item) => item.ok).map((item) => item.url));
+    const ordered = [...sources].sort((left, right) => Number(reachable.has(right.url)) - Number(reachable.has(left.url)));
+    const selected = ordered.find((source) => reachable.has(source.url));
+    this.setProgress({
+      stage: "checking",
+      component,
+      percent,
+      detail: selected ? `${label}下载源可用：${selected.name}` : `${label}下载源预检失败，将在下载时继续重试`,
+    });
+    return ordered;
+  }
+
   private async ensureUv(force = false) {
     const uvPath = path.join(this.binRoot, "uv.exe");
     if (!force && await fileExists(uvPath)) return uvPath;
 
-    this.setProgress({ stage: "checking", component: "astrbot", percent: 5, detail: "正在获取 Python 运行工具" });
-    const release = await githubRelease(COMPONENT_POLICY.uv.repository, COMPONENT_POLICY.uv.version);
     const assetName = COMPONENT_POLICY.uv.asset;
-    const asset = release.assets.find((item) => item.name === assetName);
-    if (!asset) throw new Error(`找不到 ${assetName}`);
-
+    const sources = await this.prioritizeDownloadSources(
+      "Python 运行工具",
+      fallbackDownloadSources(COMPONENT_POLICY.uv),
+      "astrbot",
+      5,
+    );
     const archive = path.join(this.downloadsRoot, assetName);
-    await downloadFile(asset.browser_download_url, archive, (downloaded, total) => {
+    await downloadFile(sources, archive, (downloaded, total, context) => {
       const fraction = total ? downloaded / total : 0;
       this.setProgress({
         stage: "downloading",
         component: "astrbot",
         percent: Math.min(15, 5 + Math.round(fraction * 10)),
-        detail: `准备运行工具 ${formatMegabytes(downloaded)}${total ? ` / ${formatMegabytes(total)}` : ""}`,
+        detail: `准备运行工具 ${formatMegabytes(downloaded)}${total ? ` / ${formatMegabytes(total)}` : ""} · ${context.source.name} · 第 ${context.attempt}/${context.maxAttempts} 次`,
       });
-    });
-    await verifyLockedDigest(archive, COMPONENT_POLICY.uv.sha256, asset.digest);
+    }, { sha256: COMPONENT_POLICY.uv.sha256 });
 
     const staging = path.join(this.runtimeDir, "staging-uv");
     await this.removeManagedPath(staging);
@@ -1011,16 +1271,43 @@ export class NativeRuntimeManager {
     logName: string,
     extraEnv: NodeJS.ProcessEnv = {},
   ) {
-    const result = await execFileAsync(executable, args, {
-      cwd,
-      env: { ...this.uvEnvironment(), ...extraEnv },
-      windowsHide: true,
-      timeout: 30 * 60_000,
-      maxBuffer: 24 * 1024 * 1024,
-    });
-    const output = `${result.stdout}\n${result.stderr}`.trim();
-    if (output) await writeFile(path.join(this.logsRoot, logName), `${output}\n`, "utf8");
-    return output;
+    const logPath = path.join(this.logsRoot, logName);
+    const redactValues = [
+      ...args.filter((value) => value.length >= 12),
+      ...Object.values(extraEnv).filter((value): value is string => typeof value === "string" && value.length >= 12),
+    ];
+    const sanitize = (value: string) => redactValues.reduce(
+      (result, secret) => result.split(secret).join("[REDACTED]"),
+      value,
+    );
+    const appendLog = async (status: "success" | "failed", output: string) => {
+      const body = sanitize(output.trim());
+      await writeFile(logPath, `[${new Date().toISOString()}] ${status}${body ? `\n${body}` : ""}\n`, {
+        encoding: "utf8",
+        flag: "a",
+      });
+    };
+
+    try {
+      const result = await execFileAsync(executable, args, {
+        cwd,
+        env: { ...this.uvEnvironment(), ...extraEnv },
+        windowsHide: true,
+        timeout: 30 * 60_000,
+        maxBuffer: 24 * 1024 * 1024,
+      });
+      const output = `${result.stdout}\n${result.stderr}`.trim();
+      await appendLog("success", output);
+      return output;
+    } catch (error) {
+      const failure = error as Error & { code?: string | number; killed?: boolean; stdout?: string | Buffer; stderr?: string | Buffer };
+      const output = [failure.stdout?.toString(), failure.stderr?.toString()].filter(Boolean).join("\n").trim();
+      const reason = failure.killed || failure.code === "ETIMEDOUT"
+        ? "命令运行超过 30 分钟，已停止"
+        : output || `命令退出（${String(failure.code ?? "unknown")}）`;
+      await appendLog("failed", `${reason}\n`);
+      throw new Error(`组件安装失败：${sanitize(reason).slice(-2_000)}`);
+    }
   }
 
   private async mergeAstrBotConfig() {
@@ -1075,16 +1362,50 @@ export class NativeRuntimeManager {
       return;
     }
     const uvPath = await this.ensureUv(force);
-    this.setProgress({ stage: "installing", component: "astrbot", percent: 18, detail: "正在准备 AstrBot 和独立 Python 3.12" });
-    await this.runInstallerCommand(uvPath, [
-      "tool",
-      "install",
-      "--python",
-      COMPONENT_POLICY.python.version,
-      "--managed-python",
-      "--force",
-      `${COMPONENT_POLICY.astrbot.package}==${COMPONENT_POLICY.astrbot.version}`,
-    ], this.astrbotRoot, "astrbot-install.log");
+    const configuredSources = COMPONENT_POLICY.astrbot.installSources ?? [{
+      name: "PyPI 官方",
+      indexUrl: "https://pypi.org/simple",
+      pythonSource: "GitHub 官方",
+    }];
+    this.setProgress({ stage: "checking", component: "astrbot", percent: 16, detail: "正在检查 Python 与 AstrBot 下载源" });
+    const sourceHealth = await probeDownloadSources(configuredSources.map((source) => ({
+      name: source.name,
+      url: `${source.indexUrl.replace(/\/$/, "")}/${COMPONENT_POLICY.astrbot.package}/`,
+    })));
+    const reachable = new Set(sourceHealth.filter((item) => item.ok).map((item) => item.name));
+    const installSources = [...configuredSources].sort(
+      (left, right) => Number(reachable.has(right.name)) - Number(reachable.has(left.name)),
+    );
+    let installError: Error | null = null;
+
+    for (const [index, source] of installSources.entries()) {
+      const pythonSource = COMPONENT_POLICY.python.installSources?.find((candidate) => candidate.name === source.pythonSource);
+      const sourceEnv: NodeJS.ProcessEnv = { UV_DEFAULT_INDEX: source.indexUrl };
+      if (pythonSource) sourceEnv.UV_PYTHON_INSTALL_MIRROR = pythonSource.mirrorUrl;
+      this.setProgress({
+        stage: "installing",
+        component: "astrbot",
+        percent: 18,
+        detail: `正在准备 AstrBot 和独立 Python 3.12 · ${source.name} · 第 ${index + 1}/${installSources.length} 个源`,
+      });
+      try {
+        await this.runInstallerCommand(uvPath, [
+          "tool",
+          "install",
+          "--python",
+          COMPONENT_POLICY.python.version,
+          "--managed-python",
+          "--force",
+          `${COMPONENT_POLICY.astrbot.package}==${COMPONENT_POLICY.astrbot.version}`,
+        ], this.astrbotRoot, "astrbot-install.log", sourceEnv);
+        installError = null;
+        break;
+      } catch (error) {
+        installError = error instanceof Error ? error : new Error("Python 与 AstrBot 安装失败");
+        if (index + 1 < installSources.length) await new Promise((resolve) => setTimeout(resolve, 1_000));
+      }
+    }
+    if (installError) throw new Error(`所有 Python/AstrBot 下载源均失败：${installError.message}`);
     if (!await fileExists(executable)) throw new Error("AstrBot 安装完成，但没有找到启动程序");
 
     await this.configureAstrBot(executable);
@@ -1124,21 +1445,22 @@ export class NativeRuntimeManager {
       return;
     }
 
-    this.setProgress({ stage: "checking", component: "napcat", percent: 55, detail: "正在获取 NapCat Windows 版本" });
-    const release = await githubRelease(COMPONENT_POLICY.napcat.repository, COMPONENT_POLICY.napcat.version);
-    const asset = release.assets.find((item) => item.name === COMPONENT_POLICY.napcat.asset);
-    if (!asset) throw new Error("最新 NapCat 版本缺少 Windows Shell 包");
+    const sources = await this.prioritizeDownloadSources(
+      "NapCat",
+      fallbackDownloadSources(COMPONENT_POLICY.napcat),
+      "napcat",
+      55,
+    );
     const archive = path.join(this.downloadsRoot, `NapCat.Shell-${COMPONENT_POLICY.napcat.version}.zip`);
-    await downloadFile(asset.browser_download_url, archive, (downloaded, total) => {
+    await downloadFile(sources, archive, (downloaded, total, context) => {
       const fraction = total ? downloaded / total : 0;
       this.setProgress({
         stage: "downloading",
         component: "napcat",
         percent: Math.min(82, 55 + Math.round(fraction * 27)),
-        detail: `下载 NapCat ${formatMegabytes(downloaded)}${total ? ` / ${formatMegabytes(total)}` : ""}`,
+        detail: `下载 NapCat ${formatMegabytes(downloaded)}${total ? ` / ${formatMegabytes(total)}` : ""} · ${context.source.name} · 第 ${context.attempt}/${context.maxAttempts} 次`,
       });
-    });
-    await verifyLockedDigest(archive, COMPONENT_POLICY.napcat.sha256, asset.digest);
+    }, { sha256: COMPONENT_POLICY.napcat.sha256 });
 
     const staging = path.join(this.runtimeDir, "staging-napcat");
     await this.removeManagedPath(staging);
@@ -1235,15 +1557,15 @@ export class NativeRuntimeManager {
     const url = await this.qqDownloadUrl();
     if (!url) return { ok: false, code: "QQ_DOWNLOAD_FAILED", message: "没有找到 QQ 官方下载地址" };
     const installer = path.join(this.downloadsRoot, "QQ-Official-x64.exe");
-    this.setProgress({ stage: "downloading", component: "qq", percent: 2, detail: "正在下载 QQ 官方安装程序" });
     try {
-      await downloadFile(url, installer, (downloaded, total) => {
+      const sources = await this.prioritizeDownloadSources("Windows QQ", [{ name: "腾讯官方", url }], "qq", 2);
+      await downloadFile(sources, installer, (downloaded, total, context) => {
         const fraction = total ? downloaded / total : 0;
         this.setProgress({
           stage: "downloading",
           component: "qq",
           percent: Math.min(72, 2 + Math.round(fraction * 70)),
-          detail: `下载 Windows QQ ${formatMegabytes(downloaded)}${total ? ` / ${formatMegabytes(total)}` : ""}`,
+          detail: `下载 Windows QQ ${formatMegabytes(downloaded)}${total ? ` / ${formatMegabytes(total)}` : ""} · ${context.source.name} · 第 ${context.attempt}/${context.maxAttempts} 次`,
         });
       });
       await this.verifyQQInstaller(installer);

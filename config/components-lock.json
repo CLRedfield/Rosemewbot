@@ -1,26 +1,64 @@
 {
   "schemaVersion": 1,
-  "policyVersion": "2026.08.10-stable.1",
+  "policyVersion": "2026.08.24-stable.1",
   "channel": "stable",
-  "testedAt": "2026-08-10",
+  "testedAt": "2026-08-24",
   "python": {
-    "version": "3.12"
+    "version": "3.12",
+    "installSources": [
+      {
+        "name": "GitHub 官方",
+        "mirrorUrl": "https://github.com/astral-sh/python-build-standalone/releases/download"
+      },
+      {
+        "name": "中科大镜像",
+        "mirrorUrl": "https://mirrors.ustc.edu.cn/github-release/astral-sh/python-build-standalone/"
+      }
+    ]
   },
   "uv": {
     "repository": "astral-sh/uv",
     "version": "0.12.1",
     "asset": "uv-x86_64-pc-windows-msvc.zip",
-    "sha256": "8fcb0cb46e1229065e344758980924e569bef5882ef45f46fada8fb24e06b74a"
+    "sha256": "8fcb0cb46e1229065e344758980924e569bef5882ef45f46fada8fb24e06b74a",
+    "downloadSources": [
+      {
+        "name": "GitHub 官方",
+        "url": "https://github.com/astral-sh/uv/releases/download/0.12.1/uv-x86_64-pc-windows-msvc.zip"
+      },
+      {
+        "name": "Astral 官方分发",
+        "url": "https://releases.astral.sh/github/uv/releases/download/0.12.1/uv-x86_64-pc-windows-msvc.zip"
+      }
+    ]
   },
   "astrbot": {
     "package": "astrbot",
-    "version": "4.27.2"
+    "version": "4.27.3",
+    "installSources": [
+      {
+        "name": "PyPI 官方",
+        "indexUrl": "https://pypi.org/simple",
+        "pythonSource": "GitHub 官方"
+      },
+      {
+        "name": "中科大镜像",
+        "indexUrl": "https://mirrors.ustc.edu.cn/pypi/simple",
+        "pythonSource": "中科大镜像"
+      }
+    ]
   },
   "napcat": {
     "repository": "NapNeko/NapCatQQ",
-    "version": "v4.18.14",
+    "version": "v4.18.19",
     "asset": "NapCat.Shell.zip",
-    "sha256": "225ff4876041878de27d79aaed88f68b7b0c40b17b284a5879f8a928429c2de4"
+    "sha256": "c5b7423d1d5b8c555d62cd9e4059b1908cc0986e7b5c85a0f450f4a8ed170acf",
+    "downloadSources": [
+      {
+        "name": "GitHub 官方",
+        "url": "https://github.com/NapNeko/NapCatQQ/releases/download/v4.18.19/NapCat.Shell.zip"
+      }
+    ]
   },
   "qq": {
     "minimumBuild": 40768,

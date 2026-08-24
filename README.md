@@ -9,7 +9,7 @@
 构建产物：
 
 ```text
-release/Rosemewbot-Setup-0.6.1-x64.exe
+release/Rosemewbot-Setup-0.6.2-x64.exe
 ```
 
 用户流程只有三步：
