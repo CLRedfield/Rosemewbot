@@ -87,6 +87,10 @@ Windows 常规卸载只删除程序目录，不删除相邻的 `-data` 目录。
 
 应用内置 `config/components-lock.json` 稳定策略，固定经过联合验证的 uv、Python、AstrBot、NapCat 和 QQ 兼容下限。首次准备、更新与修复都使用该策略，不再分别追随上游“最新版本”。
 
+2026-10-08 例行更新：AstrBot 升级至 PyPI 稳定版 `4.28.2`，NapCat 升级至 `v4.18.33`，同步官方 Shell 安装包的 SHA-256。AstrBot `4.29.0-beta.1` 不纳入稳定渠道。
+
+本机验收说明：QQ 实际加载 `9.9.31-49738` 时，NapCat `v4.18.33` 附带的 Windows Hook DLL 未能进入 JavaScript 启动入口。本机保留了此前 `v4.18.19` 官方包中的 `NapCatWinBootHook.dll`（SHA-256：`962bd5caf59e9792c37eed99c9130bf1464d619d0209820be570874017d66925`），新版 NapCat 核心、WebUI、QQ 自动登录和 OneBot 连接均已验收通过。这是本机兼容覆盖；干净安装和“修复组件”仍使用新版官方包，需要在对应 QQ 环境重新验证，修复后可能需要恢复该兼容 DLL。
+
 - “更新”只重装偏离稳定策略或缺失的组件；已匹配的 uv、AstrBot、NapCat 不再重复下载和安装。
 - “修复”会重新安装稳定策略版本，并只校正 Rosemewbot 自己创建的 AstrBot/NapCat OneBot 连接项。
 - 带固定摘要的下载文件会先校验本地缓存；缓存有效时不访问网络，缓存损坏时自动重新下载。多个可用源按实时响应延迟排序。
@@ -97,6 +101,8 @@ Windows 常规卸载只删除程序目录，不删除相邻的 `-data` 目录。
 - 停止 NapCat 时除启动器 PID 外，还会定位实际加载受管 `NapCatWinBootHook.dll` 的 QQ 进程并等待 DLL 释放，避免升级清理触发 Windows `EPERM`。
 
 ## 下载与配置来源
+
+下载需要能连接 GitHub（通常需要 VPN）。首次准备、组件更新/修复的下载进度以及应用更新入口均显示网络提示；请在下载前确认 GitHub 可以正常访问，并在下载期间保持连接。
 
 - `uv`：按 `config/components-lock.json` 从 `astral-sh/uv` 指定 GitHub Release 获取 Windows x64 压缩包并校验固定 SHA-256。
 - Python 3.12 与 AstrBot：由私有目录中的 uv 管理，AstrBot 使用策略中锁定的精确 PyPI 版本。
@@ -139,7 +145,7 @@ npm run desktop:pack
 构建产物：
 
 ```text
-release/Rosemewbot-Setup-0.6.3-x64.exe
+release/Rosemewbot-Setup-0.6.4-x64.exe
 release/win-unpacked/Rosemewbot.exe
 ```
 

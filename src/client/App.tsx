@@ -62,6 +62,8 @@ import type {
 import { copyTextToClipboard } from "./clipboard";
 import { createFirstSetupPlan, getQQSessionPresentation, getRuntimeProgressHeadline, getRuntimeServicePresentation } from "./runtime-logic";
 
+const githubDownloadNotice = "下载需要能连接 GitHub（通常需要 VPN），请先确认 GitHub 可以正常访问。";
+
 const fallbackConfig: PublicConfig = {
   astrbotUrl: "http://localhost:6185",
   napcatUrl: "http://localhost:6099/webui",
@@ -1214,6 +1216,7 @@ function RuntimeView({ runtime, status, acceptance, config, checking, manualChec
           <div>
             <strong>{needsSetup ? "首次使用，一键完成本机准备" : "基础组件已就绪，还差 Windows QQ"}</strong>
             <p>{needsSetup ? "软件会把独立运行环境、AstrBot 和 NapCat 放入安装时选择的位置，不修改系统 Python。" : "点击后下载 QQ 官方安装程序；完成安装后会自动启动机器人。"}</p>
+            {needsSetup && <p>{githubDownloadNotice}</p>}
           </div>
         </div>
       )}
@@ -1250,6 +1253,9 @@ function RuntimeView({ runtime, status, acceptance, config, checking, manualChec
             <b>{Math.round(progress.percent)}%</b>
           </div>
           <div className="install-progress-track"><span style={{ width: `${Math.max(0, Math.min(100, progress.percent))}%` }} /></div>
+          {activeAction !== "install-qq" && activeAction !== "rollback" && (
+            <p className="download-network-notice">{githubDownloadNotice}</p>
+          )}
         </div>
       )}
 
@@ -1307,6 +1313,7 @@ function RuntimeView({ runtime, status, acceptance, config, checking, manualChec
             ))}
           </div>
 
+          <p className="download-network-notice">{githubDownloadNotice}</p>
           <div className="compatibility-footer">
             <div className="snapshot-summary">
               <History size={16} />
@@ -1620,6 +1627,7 @@ function SettingsView({
                 )}
               </div>
             )}
+            {updateResult?.status === "available" && <p className="download-network-notice">{githubDownloadNotice}</p>}
             {desktop && (
               <div className="setting-row">
                 <div className="setting-copy"><strong>数据目录</strong><small>{runtime?.runtimeDir ?? "初始化中"}</small></div>

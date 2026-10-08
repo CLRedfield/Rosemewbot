@@ -9,7 +9,7 @@
 构建产物：
 
 ```text
-release/Rosemewbot-Setup-0.6.3-x64.exe
+release/Rosemewbot-Setup-0.6.4-x64.exe
 ```
 
 用户流程只有三步：
@@ -19,6 +19,8 @@ release/Rosemewbot-Setup-0.6.3-x64.exe
 3. 登录机器人 QQ，点击“启动机器人”，再在 AstrBot 中添加模型。
 
 不需要 Docker Desktop，不需要用户安装 Python、Node.js，也不需要打开 PowerShell。
+
+下载应用安装包、首次准备、更新或修复组件时，需要能连接 GitHub（通常需要 VPN）。开始下载前请确认 GitHub 可以正常访问，并在下载完成前保持连接。
 
 默认安装位置：
 

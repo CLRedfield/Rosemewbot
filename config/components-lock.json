@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "policyVersion": "2026.08.24-stable.1",
+  "policyVersion": "2026.10.08-stable.1",
   "channel": "stable",
-  "testedAt": "2026-08-24",
+  "testedAt": "2026-10-08",
   "python": {
     "version": "3.12",
     "installSources": [
@@ -34,7 +34,7 @@
   },
   "astrbot": {
     "package": "astrbot",
-    "version": "4.27.3",
+    "version": "4.28.2",
     "installSources": [
       {
         "name": "PyPI 官方",
@@ -50,13 +50,13 @@
   },
   "napcat": {
     "repository": "NapNeko/NapCatQQ",
-    "version": "v4.18.19",
+    "version": "v4.18.33",
     "asset": "NapCat.Shell.zip",
-    "sha256": "c5b7423d1d5b8c555d62cd9e4059b1908cc0986e7b5c85a0f450f4a8ed170acf",
+    "sha256": "4b8e20e6d22288586d99eb0b34fff6c7ee1d88b00353039326f8c459a86df667",
     "downloadSources": [
       {
         "name": "GitHub 官方",
-        "url": "https://github.com/NapNeko/NapCatQQ/releases/download/v4.18.19/NapCat.Shell.zip"
+        "url": "https://github.com/NapNeko/NapCatQQ/releases/download/v4.18.33/NapCat.Shell.zip"
       }
     ]
   },

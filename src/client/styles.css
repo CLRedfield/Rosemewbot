@@ -941,6 +941,7 @@ main { min-width: 0; }
 .install-progress-heading b { flex: 0 0 auto; color: var(--accent); font: 650 11px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .install-progress-track { height: 4px; overflow: hidden; border-radius: 999px; background: var(--surface-raised); }
 .install-progress-track span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width .2s ease; }
+.download-network-notice { margin: 10px 0; color: var(--muted); font-size: calc(11px * var(--font-scale)); line-height: 1.6; }
 
 .runtime-actions {
   display: grid;
