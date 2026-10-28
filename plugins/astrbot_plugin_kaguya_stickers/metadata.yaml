@@ -1,0 +1,9 @@
+name: astrbot_plugin_kaguya_stickers
+display_name: 辉夜表情包
+desc: 为辉夜提供卡拉彼丘与超时空辉夜姬表情检索、联网补充和真实图片回复。
+version: 1.2.0
+author: Rosemewbot
+astrbot_version: ">=4.27.1,<5"
+support_platforms:
+  - aiocqhttp
+  - webchat

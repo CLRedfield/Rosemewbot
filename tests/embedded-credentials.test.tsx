@@ -47,27 +47,27 @@ describe("embedded panel credentials", () => {
     });
   });
 
-  it("reveals only the NapCat token after an explicit click", async () => {
+  it("reveals only the SnowLuma token after an explicit click", async () => {
     render(<EmbeddedCredentials panel="napcat" />);
 
     expect(getCredentials).not.toHaveBeenCalled();
     expect(screen.queryByText(credentials.napcatToken)).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "显示 NapCat 登录凭据" }));
+    fireEvent.click(screen.getByRole("button", { name: "显示 SnowLuma 登录凭据" }));
 
     expect(await screen.findByText(credentials.napcatToken)).toBeInTheDocument();
     expect(screen.queryByText(credentials.astrbotUsername)).not.toBeInTheDocument();
     expect(screen.queryByText(credentials.astrbotPassword)).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "隐藏 NapCat 登录凭据" }));
+    fireEvent.click(screen.getByRole("button", { name: "隐藏 SnowLuma 登录凭据" }));
     expect(screen.queryByText(credentials.napcatToken)).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "显示 NapCat 登录凭据" }));
+    fireEvent.click(screen.getByRole("button", { name: "显示 SnowLuma 登录凭据" }));
     expect(await screen.findByText(credentials.napcatToken)).toBeInTheDocument();
     expect(getCredentials).toHaveBeenCalledTimes(2);
   });
 
-  it("reveals the AstrBot username and password without exposing the NapCat token", async () => {
+  it("reveals the AstrBot username and password without exposing the SnowLuma token", async () => {
     render(<EmbeddedCredentials panel="astrbot" />);
 
     expect(screen.queryByText(credentials.astrbotUsername)).not.toBeInTheDocument();

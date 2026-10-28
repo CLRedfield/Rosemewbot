@@ -93,7 +93,7 @@ export async function collectStatus(options: {
 }): Promise<StackStatus> {
   const timeout = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const services = await Promise.all([
-    probeHttp("napcat", "NapCat", options.napcatUrl, timeout),
+    probeHttp("napcat", "SnowLuma", options.napcatUrl, timeout),
     probeHttp("astrbot", "AstrBot", options.astrbotUrl, timeout),
     probeTcp(options.onebotHost, options.onebotPort, timeout),
   ]);

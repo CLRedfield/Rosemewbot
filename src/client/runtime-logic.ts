@@ -27,7 +27,7 @@ export function getRuntimeProgressHeadline(progress: DesktopInstallProgress): st
         ? "正在把 AstrBot 安顿好……"
         : "正在叼回 Python……";
     case "napcat":
-      return "正在给 NapCat 铺猫窝……";
+      return "正在给 SnowLuma 铺猫窝……";
     case "qq":
       return progress.stage === "waiting"
         ? "QQ 已到门口，等你开门……"

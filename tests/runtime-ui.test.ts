@@ -105,8 +105,8 @@ describe("desktop runtime UI state", () => {
       "正在把 AstrBot 安顿好……",
     ],
     [
-      { stage: "installing", component: "napcat", percent: 84, detail: "正在安装 NapCat" },
-      "正在给 NapCat 铺猫窝……",
+      { stage: "installing", component: "napcat", percent: 84, detail: "正在安装 SnowLuma" },
+      "正在给 SnowLuma 铺猫窝……",
     ],
     [
       { stage: "waiting", component: "qq", percent: 75, detail: "请完成 QQ 安装" },

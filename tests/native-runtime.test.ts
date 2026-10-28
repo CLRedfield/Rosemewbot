@@ -213,7 +213,7 @@ describe("Windows native runtime configuration", () => {
   it("updates only components that differ from the stable policy", () => {
     expect(buildComponentMaintenancePlan({
       astrbotVersion: "4.27.2",
-      napcatVersion: COMPONENT_POLICY.napcat.version,
+      snowlumaVersion: COMPONENT_POLICY.snowluma.version,
       uvVersion: COMPONENT_POLICY.uv.version,
     }, { astrbot: true, napcat: true, uv: true }, "update")).toEqual({
       astrbot: true,
@@ -317,8 +317,8 @@ describe("Windows native runtime configuration", () => {
     const runtimeDir = manager.runtimeDir;
     const files = {
       astrbotData: path.join(runtimeDir, "astrbot", "data", "marker.txt"),
-      napcat: path.join(runtimeDir, "napcat", "NapCatWinBootMain.exe"),
-      napcatMarker: path.join(runtimeDir, "napcat", "marker.txt"),
+      napcat: path.join(runtimeDir, "snowluma", "node.exe"),
+      napcatMarker: path.join(runtimeDir, "snowluma", "marker.txt"),
       astrbotExecutable: path.join(runtimeDir, "bin", "astrbot.exe"),
       toolMarker: path.join(runtimeDir, "tools", "marker.txt"),
       manifest: path.join(runtimeDir, "manifest.json"),
@@ -335,11 +335,11 @@ describe("Windows native runtime configuration", () => {
       writeFile(files.napcatMarker, "old-napcat", "utf8"),
       writeFile(files.astrbotExecutable, "old-astrbot", "utf8"),
       writeFile(files.toolMarker, "old-tools", "utf8"),
-      writeFile(files.manifest, JSON.stringify({ astrbotVersion: "4.26.0", napcatVersion: "v4.18.13", uvVersion: "0.12.0" }), "utf8"),
+      writeFile(files.manifest, JSON.stringify({ astrbotVersion: "4.26.0", snowlumaVersion: "v2.0.0", uvVersion: "0.12.0" }), "utf8"),
     ]);
 
     const snapshot = await manager.createCompatibilitySnapshot("update");
-    expect(snapshot?.versions).toEqual({ astrbot: "4.26.0", napcat: "4.18.13", uv: "0.12.0" });
+    expect(snapshot?.versions).toEqual({ astrbot: "4.26.0", napcat: "2.0.0", uv: "0.12.0" });
     await Promise.all([
       writeFile(files.astrbotData, "new-data", "utf8"),
       writeFile(files.napcatMarker, "new-napcat", "utf8"),
@@ -371,19 +371,19 @@ describe("Windows native runtime configuration", () => {
     await manager.initialize();
     const runtimeDir = manager.runtimeDir;
     await Promise.all([
-      mkdir(path.join(runtimeDir, "napcat"), { recursive: true }),
+      mkdir(path.join(runtimeDir, "snowluma"), { recursive: true }),
       mkdir(path.join(runtimeDir, "tools"), { recursive: true }),
-      writeFile(path.join(runtimeDir, "manifest.json"), JSON.stringify({ napcatVersion: "v4.18.13" }), "utf8"),
+      writeFile(path.join(runtimeDir, "manifest.json"), JSON.stringify({ snowlumaVersion: "v2.0.0" }), "utf8"),
     ]);
     await Promise.all([
-      writeFile(path.join(runtimeDir, "napcat", "NapCatWinBootMain.exe"), "launcher", "utf8"),
+      writeFile(path.join(runtimeDir, "snowluma", "node.exe"), "launcher", "utf8"),
       writeFile(path.join(runtimeDir, "tools", "large-environment.txt"), "keep-live", "utf8"),
     ]);
 
     await manager.createCompatibilitySnapshot("update", { astrbot: false, napcat: true, uv: false });
-    await expect(readFile(path.join(runtimeDir, "snapshots", "last-good", "napcat", "NapCatWinBootMain.exe"), "utf8"))
+    await expect(readFile(path.join(runtimeDir, "snapshots", "last-good-snowluma", "snowluma", "node.exe"), "utf8"))
       .resolves.toBe("launcher");
-    await expect(readFile(path.join(runtimeDir, "snapshots", "last-good", "tools", "large-environment.txt"), "utf8"))
+    await expect(readFile(path.join(runtimeDir, "snapshots", "last-good-snowluma", "tools", "large-environment.txt"), "utf8"))
       .rejects.toMatchObject({ code: "ENOENT" });
   });
 });

@@ -66,7 +66,7 @@ const githubDownloadNotice = "下载需要能连接 GitHub（通常需要 VPN）
 
 const fallbackConfig: PublicConfig = {
   astrbotUrl: "http://localhost:6185",
-  napcatUrl: "http://localhost:6099/webui",
+  napcatUrl: "http://localhost:5099",
   onebotUrl: "ws://127.0.0.1:6199/ws",
   bindMode: "local",
 };
@@ -299,7 +299,7 @@ function OnboardingCredentials() {
           {credentials.astrbotCredentialState === "out-of-sync"
             ? <div><span>AstrBot 密码</span><code>已被 AstrBot 配置覆盖</code><small>请在 AstrBot 工作区重置</small></div>
             : <div><span>AstrBot 密码</span><code>{credentials.astrbotPassword}</code><CopyButton value={credentials.astrbotPassword} /></div>}
-          <div><span>NapCat 登录 Token</span><code>{credentials.napcatToken}</code><CopyButton value={credentials.napcatToken} /></div>
+          <div><span>SnowLuma 管理密码</span><code>{credentials.napcatToken}</code><CopyButton value={credentials.napcatToken} /></div>
         </div>
       )}
     </section>
@@ -358,7 +358,7 @@ export function EmbeddedCredentials({ panel }: { panel: EmbeddedPanelId }) {
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const label = panel === "napcat" ? "NapCat" : "AstrBot";
+  const label = panel === "napcat" ? "SnowLuma" : "AstrBot";
   const credentialId = `embedded-${panel}-credentials`;
 
   if (!desktop) return null;
@@ -405,7 +405,7 @@ export function EmbeddedCredentials({ panel }: { panel: EmbeddedPanelId }) {
       <div className="embedded-credential-heading">
         <KeyRound size={15} aria-hidden="true" />
         <span>
-          <strong>{panel === "napcat" ? "登录 Token" : "登录用户名与密码"}</strong>
+          <strong>{panel === "napcat" ? "管理密码" : "登录用户名与密码"}</strong>
           <small>{visible ? "仅在本机临时显示" : `登录 ${label} 后台时使用`}</small>
         </span>
       </div>
@@ -436,7 +436,7 @@ export function EmbeddedCredentials({ panel }: { panel: EmbeddedPanelId }) {
           )}
           {panel === "napcat" && (
             <div className="embedded-credential-value">
-              <span>Token</span>
+              <span>密码</span>
               <code>{credentials.napcatToken}</code>
               <CopyButton value={credentials.napcatToken} />
             </div>
@@ -473,7 +473,7 @@ function boundsForElement(element: HTMLElement): EmbeddedPanelBounds {
 function EmbeddedPanelWorkspace({ panel, runtime, acceptance, suspended = false, onOpenRuntime }: { panel: EmbeddedPanelId; runtime: DesktopRuntimeState | null; acceptance: DesktopAcceptanceState | null; suspended?: boolean; onOpenRuntime: () => void }) {
   const desktop = window.rosemewbotDesktop;
   const hostRef = useRef<HTMLDivElement>(null);
-  const label = panel === "napcat" ? "NapCat" : "AstrBot";
+  const label = panel === "napcat" ? "SnowLuma" : "AstrBot";
   const description = panel === "napcat" ? "QQ 登录与 OneBot 网络" : "模型、机器人、知识库与插件";
   const service = runtime?.services.find((item) => item.id === panel);
   const running = Boolean(service?.running);
@@ -562,7 +562,7 @@ function EmbeddedPanelWorkspace({ panel, runtime, acceptance, suspended = false,
           ? "等待准备"
           : "载入失败";
   const loadStateDetail = displayState === "ready" && qqPresentation
-    ? `NapCat 管理页已连接 · ${qqPresentation.detail}`
+    ? `SnowLuma 管理页已连接 · ${qqPresentation.detail}`
     : displayState === "offline"
       ? `${label} 服务尚未启动`
       : displayState === "missing"
@@ -621,7 +621,7 @@ function Sidebar({ view, onViewChange, desktop, onClose }: { view: ViewId; onVie
   const workspaceNav = [
     ...(desktop ? [{ id: "runtime" as const, label: "运行控制", icon: Power }] : []),
     ...(desktop ? [
-      { id: "napcat" as const, label: "NapCat 设置", icon: Bot },
+      { id: "napcat" as const, label: "SnowLuma 设置", icon: Bot },
       { id: "astrbot" as const, label: "AstrBot 设置", icon: Server },
     ] : []),
   ];
@@ -682,7 +682,7 @@ function Sidebar({ view, onViewChange, desktop, onClose }: { view: ViewId; onVie
         <ShieldAlert size={16} />
         <div>
           <strong>试点通道</strong>
-          <p>NapCat 使用普通 QQ 协议，不等同于 QQ 官方机器人。</p>
+          <p>SnowLuma 使用普通 QQ 协议，不等同于 QQ 官方机器人。</p>
         </div>
       </div>
 
@@ -773,7 +773,7 @@ function Onboarding({ config, status, acceptance, checking, onRefresh, completed
         <div>
           <span className="eyebrow">FIRST CONNECTION</span>
           <h1>把 QQ 接到你的机器人</h1>
-          <p>按顺序完成五项检查。NapCat 已预设本机反向 WebSocket，不需要容器地址或命令行。</p>
+          <p>按顺序完成五项检查。SnowLuma 已预设本机反向 WebSocket，不需要容器地址或命令行。</p>
         </div>
         <div className="progress-summary" aria-label={`接入进度 ${completedCount}/5`}>
           <strong>{completedCount}<span>/5</span></strong>
@@ -791,7 +791,7 @@ function Onboarding({ config, status, acceptance, checking, onRefresh, completed
           <WizardStep
             number="01"
             title="确认基础服务"
-            description="先确认 AstrBot 与 NapCat 已经启动。首次准备由桌面应用自动完成，可能需要几分钟。"
+            description="先确认 AstrBot 与 SnowLuma 已经启动。首次准备由桌面应用自动完成，可能需要几分钟。"
             done={servicesReady}
             current={!servicesReady}
           >
@@ -801,7 +801,7 @@ function Onboarding({ config, status, acceptance, checking, onRefresh, completed
                 return (
                   <div className="inline-service" key={id}>
                     <StatusPill state={service?.state ?? "waiting"} />
-                    <span>{id === "napcat" ? "NapCat" : "AstrBot"}</span>
+                    <span>{id === "napcat" ? "SnowLuma" : "AstrBot"}</span>
                     <small>{service?.detail ?? "等待首次探测"}</small>
                   </div>
                 );
@@ -819,15 +819,16 @@ function Onboarding({ config, status, acceptance, checking, onRefresh, completed
             description={qqLoginReady && acceptance?.qqAccount
               ? `已实时确认机器人账号 ${acceptance.qqAccount} 在线。建议始终使用独立账号，不要使用主账号。`
               : acceptance?.qqSession.state === "offline"
-                ? "NapCat 管理页可以访问，但 QQ 会话已经掉线。请打开 NapCat 重新登录。"
+                ? "SnowLuma 管理页可以访问，但 QQ 会话已经掉线。请在 Windows QQ 中重新登录。"
                 : acceptance?.qqSession.state === "unknown"
                   ? `暂时无法确认 QQ 是否在线：${acceptance.qqSession.detail}`
-                  : "NapCat 管理页可以访问，正在等待你扫码登录专用 QQ。登录后这里会自动更新。"}
+                  : "SnowLuma 管理页可以访问，请在 Windows QQ 中扫码登录专用账号。登录后这里会自动更新。"}
             done={qqLoginReady}
             current={servicesReady && !qqLoginReady}
           >
             <div className="action-row">
-              <ServiceOpenButton panel="napcat" href={config.napcatUrl} primary>打开 NapCat</ServiceOpenButton>
+              {window.rosemewbotDesktop && <button className="button button-primary" type="button" onClick={() => void window.rosemewbotDesktop?.runAction("open-qq")}>打开 QQ 登录</button>}
+              <ServiceOpenButton panel="napcat" href={config.napcatUrl} primary>打开 SnowLuma</ServiceOpenButton>
               {automatic
                 ? <span className={`auto-check ${qqLoginReady ? "auto-check-ready" : ""}`} title={qqPresentation?.detail}><LogIn size={14} />{qqLoginReady ? `QQ ${acceptance?.qqAccount ?? "在线"}` : qqPresentation?.label ?? "等待扫码登录"}</span>
                 : <CompletionButton done={completed.has("qq-login")} onClick={() => onToggle("qq-login")} />}
@@ -837,7 +838,7 @@ function Onboarding({ config, status, acceptance, checking, onRefresh, completed
           <WizardStep
             number="03"
             title="确认 OneBot 通道"
-            description="AstrBot 的 OneBot v11 适配器已预配置为本机 6199 端口；这里检查的是真实 TCP 连接，不再只判断端口是否打开。"
+            description="AstrBot 的 OneBot v11 适配器已预配置为本机 6199 端口；这里检查所选 QQ 账号的 SnowLuma WebSocket 连接状态。"
             done={onebotReady}
             current={qqLoginReady && !onebotReady}
           >
@@ -847,7 +848,7 @@ function Onboarding({ config, status, acceptance, checking, onRefresh, completed
             </div>
             <div className="muted-line">
               <StatusPill state={onebotReady ? "ready" : "waiting"} detail />
-              <span>{onebotReady ? "NapCat 已与 AstrBot 建立 WebSocket 连接" : acceptance?.onebotConfigured ? "配置正确，等待 NapCat 连接" : "OneBot 配置需要修复"}</span>
+              <span>{onebotReady ? "SnowLuma 已与 AstrBot 建立 WebSocket 连接" : acceptance?.onebotConfigured ? "配置正确，等待 SnowLuma 连接" : "OneBot 配置需要修复"}</span>
             </div>
           </WizardStep>
 
@@ -924,7 +925,7 @@ function ConnectionRail({ status, completed, acceptance }: { status: StackStatus
   const byId = new Map(status.services.map((service) => [service.id, service]));
   const nodes = [
     { label: acceptance?.qqAccount ? `QQ ${acceptance.qqAccount}` : "QQ 账号", icon: MessageCircle, state: (acceptance ? acceptance.qqSession.state === "online" : completed.has("qq-login")) ? "ready" : "waiting" },
-    { label: "NapCat", icon: Bot, state: byId.get("napcat")?.state ?? "waiting" },
+    { label: "SnowLuma", icon: Bot, state: byId.get("napcat")?.state ?? "waiting" },
     { label: "OneBot 11", icon: Cable, state: acceptance ? acceptance.onebotConnected ? "ready" : "waiting" : byId.get("onebot")?.state ?? "waiting" },
     { label: "AstrBot", icon: Server, state: byId.get("astrbot")?.state ?? "waiting" },
     { label: acceptance?.modelName ?? "模型", icon: KeyRound, state: (acceptance?.modelConfigured ?? completed.has("model")) ? "ready" : "waiting" },
@@ -966,7 +967,7 @@ function StatusView({ status, config, acceptance, runtime, checking, onRefresh }
           ...base,
           state: qq.state,
           label: qq.label,
-          detail: `NapCat 管理页可达 · ${qq.detail}`,
+          detail: `SnowLuma 管理页可达 · ${qq.detail}`,
         };
       }
       return base;
@@ -986,7 +987,7 @@ function StatusView({ status, config, acceptance, runtime, checking, onRefresh }
       state,
       label: state === "ready" ? "已连接" : "等待连接",
       detail: acceptance
-        ? acceptance.onebotConnected ? "NapCat 已建立真实 WebSocket 连接" : "6199 端口可用，等待 NapCat 连接"
+        ? acceptance.onebotConnected ? "SnowLuma 已建立真实 WebSocket 连接" : "6199 端口可用，等待 SnowLuma 连接"
         : service.detail,
       canOpen: false,
     };
@@ -1040,7 +1041,7 @@ function StatusView({ status, config, acceptance, runtime, checking, onRefresh }
 
       <div className="observability-note">
         <Wifi size={18} />
-        <div><strong>真实在线验收</strong><p>NapCat 会实时确认 QQ 登录与在线状态；OneBot 还要求 6199 端口存在实际的 ESTABLISHED 连接。只有管理页可达不会再显示为机器人在线。</p></div>
+        <div><strong>真实在线验收</strong><p>SnowLuma 会实时确认 QQ 登录与在线状态；OneBot 同时核对所选账号的反向 WebSocket 实际连接状态。只有管理页可达不会再显示为机器人在线。</p></div>
       </div>
     </div>
   );
@@ -1091,26 +1092,26 @@ function RuntimeView({ runtime, status, acceptance, config, checking, manualChec
         ? { label: "部分组件需处理", tone: "warning" }
         : { label: "已就绪，等待启动", tone: "neutral" };
   const primaryActionCopy = activeAction === "install"
-    ? { eyebrow: "FIRST RUN", title: "正在准备运行环境……", detail: "Python、AstrBot 与 NapCat 正在就位" }
+    ? { eyebrow: "FIRST RUN", title: "正在准备运行环境……", detail: "Python、AstrBot 与 SnowLuma 正在就位" }
     : activeAction === "install-qq"
       ? { eyebrow: "FIRST RUN", title: "正在请 QQ 进屋……", detail: "请在打开的窗口中完成 QQ 安装" }
       : activeAction === "start"
-        ? { eyebrow: "WAKING UP", title: "正在挨个叫醒机器人……", detail: "正在启动 AstrBot、NapCat 与 QQ" }
+        ? { eyebrow: "WAKING UP", title: "正在挨个叫醒机器人……", detail: "正在启动 AstrBot、SnowLuma 与 QQ" }
         : running
           ? qqSession.state === "online" && acceptance?.onebotConnected
             ? { eyebrow: "ONLINE", title: "机器人正在值班", detail: `${qqSession.detail} · OneBot 已连接` }
             : qqSession.state === "offline"
-              ? { eyebrow: "QQ OFFLINE", title: "QQ 已掉线，等它重新上线", detail: "NapCat 管理页仍可访问；请重新登录 QQ" }
+              ? { eyebrow: "QQ OFFLINE", title: "QQ 已掉线，等它重新上线", detail: "SnowLuma 管理页仍可访问；请重新登录 QQ" }
               : qqSession.state === "logged-out"
-                ? { eyebrow: "WAITING FOR QQ", title: "服务已醒，等 QQ 登录", detail: "打开 NapCat，用手机 QQ 扫码登录" }
+                ? { eyebrow: "WAITING FOR QQ", title: "服务已醒，等 QQ 登录", detail: "打开 Windows QQ，登录辉夜账号" }
                 : qqSession.state === "online"
                   ? { eyebrow: "CONNECTING", title: "QQ 在线，正在接通 OneBot……", detail: qqSession.detail }
                   : { eyebrow: "CHECKING QQ", title: "服务运行中，正在确认 QQ……", detail: qqSession.detail }
           : needsSetup
-            ? { eyebrow: "FIRST RUN", title: "一键准备并运行", detail: "准备独立 Python、AstrBot 与 NapCat；QQ 安装需确认" }
+            ? { eyebrow: "FIRST RUN", title: "一键准备并运行", detail: "准备独立 Python、AstrBot 与 SnowLuma；QQ 安装需确认" }
             : needsQQ
               ? { eyebrow: "ONE MORE STEP", title: "安装 QQ 并运行", detail: "完成 QQ 官方安装后会自动启动机器人" }
-              : { eyebrow: "QUICK START", title: "一键运行机器人", detail: "启动 AstrBot、NapCat 与 QQ" };
+              : { eyebrow: "QUICK START", title: "一键运行机器人", detail: "启动 AstrBot、SnowLuma 与 QQ" };
   const primaryActionDisabled = !supported || running || busy;
   const primaryFlowBusy = activeAction === "install" || activeAction === "install-qq" || activeAction === "start";
 
@@ -1195,7 +1196,7 @@ function RuntimeView({ runtime, status, acceptance, config, checking, manualChec
             <h1>运行控制</h1>
             <span className={`runtime-state state-${stateCopy.tone}`}><span />{stateCopy.label}</span>
           </div>
-          <p>Windows 本机直接运行 AstrBot、NapCat 和 QQ。无需 Docker，也无需用户安装 Python 或输入命令。</p>
+          <p>Windows 本机直接运行 AstrBot、SnowLuma 和 QQ。无需 Docker，也无需用户安装 Python 或输入命令。</p>
         </div>
         <button className="button button-secondary" type="button" onClick={() => void onManualRefresh()} disabled={checking || busy}>
           <RefreshCw size={15} className={checking ? "spin" : ""} />
@@ -1215,7 +1216,7 @@ function RuntimeView({ runtime, status, acceptance, config, checking, manualChec
           {needsSetup ? <Download size={18} /> : <MessageCircle size={18} />}
           <div>
             <strong>{needsSetup ? "首次使用，一键完成本机准备" : "基础组件已就绪，还差 Windows QQ"}</strong>
-            <p>{needsSetup ? "软件会把独立运行环境、AstrBot 和 NapCat 放入安装时选择的位置，不修改系统 Python。" : "点击后下载 QQ 官方安装程序；完成安装后会自动启动机器人。"}</p>
+            <p>{needsSetup ? "软件会把独立运行环境、AstrBot 和 SnowLuma 放入安装时选择的位置，不修改系统 Python。" : "点击后下载 QQ 官方安装程序；完成安装后会自动启动机器人。"}</p>
             {needsSetup && <p>{githubDownloadNotice}</p>}
           </div>
         </div>
@@ -1353,7 +1354,7 @@ function RuntimeView({ runtime, status, acceptance, config, checking, manualChec
           return (
             <div className="component-row" key={id}>
               <div className={`component-icon ${service.running ? "component-running" : ""}`}>{id === "napcat" ? <Bot size={19} /> : <Server size={19} />}</div>
-              <div className="component-copy"><strong>{id === "napcat" ? "NapCat" : "AstrBot"}</strong><span>{service.version ? `${service.version} · ` : ""}{id === "napcat" ? "QQ 登录与 OneBot 网络" : "模型、机器人、知识库与插件"}</span></div>
+              <div className="component-copy"><strong>{id === "napcat" ? "SnowLuma" : "AstrBot"}</strong><span>{service.version ? `${service.version} · ` : ""}{id === "napcat" ? "QQ 登录与 OneBot 网络" : "模型、机器人、知识库与插件"}</span></div>
               <StatusPill state={service.probe} detail label={service.statusLabel} />
               <span className="component-detail">{service.detail}</span>
               <ServiceOpenButton panel={id} href={id === "napcat" ? config.napcatUrl : config.astrbotUrl} disabled={!service.canOpen}>{service.canOpen ? "打开完整设置" : service.installed ? service.running ? "服务恢复后打开" : "启动后打开" : "准备后打开"}</ServiceOpenButton>
@@ -1367,7 +1368,7 @@ function RuntimeView({ runtime, status, acceptance, config, checking, manualChec
           <div><ScrollText size={16} /><span>最近日志</span></div>
           <div className="log-tabs">
             <button className={logService === "astrbot" ? "active" : ""} type="button" onClick={() => void loadLogs("astrbot")}>AstrBot</button>
-            <button className={logService === "napcat" ? "active" : ""} type="button" onClick={() => void loadLogs("napcat")}>NapCat</button>
+            <button className={logService === "napcat" ? "active" : ""} type="button" onClick={() => void loadLogs("napcat")}>SnowLuma</button>
           </div>
           <button className="copy-button" type="button" onClick={() => void loadLogs()} disabled={logsLoading || !nativeReady}><RefreshCw size={14} className={logsLoading ? "spin" : ""} />刷新日志</button>
         </div>
@@ -1377,7 +1378,7 @@ function RuntimeView({ runtime, status, acceptance, config, checking, manualChec
   );
 }
 
-function SettingsView({
+export function SettingsView({
   runtime,
   theme,
   onThemeChange,
@@ -1396,6 +1397,10 @@ function SettingsView({
   const [preferences, setPreferences] = useState<DesktopPreferences>(runtime?.preferences ?? {
     launchAtLogin: false,
     startBotAtLogin: false,
+    startBotOnLaunch: false,
+    autoLoginSnowLuma: true,
+    autoStartQQ: true,
+    autoConnectQQ: true,
     autoRecovery: true,
     autoLoginAccount: null,
   });
@@ -1408,6 +1413,8 @@ function SettingsView({
   const [accountListLoading, setAccountListLoading] = useState(false);
   const [accountListLoaded, setAccountListLoaded] = useState(false);
   const [accountListError, setAccountListError] = useState<string | null>(null);
+  const [savingPreference, setSavingPreference] = useState(false);
+  const [accountDraft, setAccountDraft] = useState(runtime?.preferences.autoLoginAccount ?? "");
   const napcatRunning = runtime?.services.some((service) => service.id === "napcat" && service.running) === true;
   const selectableQQAccounts = useMemo(() => {
     const selected = preferences.autoLoginAccount;
@@ -1418,7 +1425,7 @@ function SettingsView({
   const refreshQQAccounts = useCallback(async () => {
     if (!desktop) return;
     if (!napcatRunning) {
-      setAccountListError("请先启动机器人，让 NapCat 读取本机可快速登录的 QQ");
+      setAccountListError("请先启动机器人，让 SnowLuma 读取本机已登录的 QQ");
       setAccountListLoaded(true);
       return;
     }
@@ -1428,10 +1435,10 @@ function SettingsView({
       const accounts = await desktop.getQQLoginAccounts();
       setQQAccounts(accounts);
       setAccountListLoaded(true);
-      if (accounts.length === 0) setAccountListError("没有发现可快速登录的账号，请先在 NapCat 中完成一次登录");
+      if (accounts.length === 0) setAccountListError("没有发现账号，请先在 Windows QQ 中完成登录");
     } catch (error) {
       setAccountListLoaded(true);
-      setAccountListError(error instanceof Error ? error.message : "无法读取 NapCat 快速登录账号");
+      setAccountListError(error instanceof Error ? error.message : "无法读取 SnowLuma 接入账号");
     } finally {
       setAccountListLoading(false);
     }
@@ -1440,6 +1447,8 @@ function SettingsView({
   useEffect(() => {
     if (runtime?.preferences) setPreferences(runtime.preferences);
   }, [runtime?.preferences]);
+
+  useEffect(() => { setAccountDraft(preferences.autoLoginAccount ?? ""); }, [preferences.autoLoginAccount]);
 
   useEffect(() => {
     if (!napcatRunning) {
@@ -1460,14 +1469,15 @@ function SettingsView({
   }, [desktop]);
 
   const updatePreference = async (next: Partial<DesktopPreferences>) => {
-    if (!desktop) return;
+    if (!desktop || savingPreference) return;
+    setSavingPreference(true);
     setActionFeedback(null);
     try {
       setPreferences(await desktop.setPreferences(next));
       await onRefresh();
     } catch (error) {
       setActionFeedback({ ok: false, message: error instanceof Error ? error.message : "无法保存设置" });
-    }
+    } finally { setSavingPreference(false); }
   };
 
   const checkAppUpdate = async () => {
@@ -1568,38 +1578,57 @@ function SettingsView({
           <section className="settings-section" aria-labelledby="startup-settings-title">
             <div className="settings-section-heading">
               <Power size={18} />
-              <div><h2 id="startup-settings-title">启动与恢复</h2><p>控制托盘启动和组件异常恢复。</p></div>
+              <div><h2 id="startup-settings-title">启动与连接</h2><p>每一步都可单独选择，设置会自动保存。</p></div>
             </div>
             <div className="settings-panel">
-              <PreferenceToggle label="开机启动控制台" detail="登录 Windows 后在托盘运行" checked={preferences.launchAtLogin} onChange={(checked) => void updatePreference({ launchAtLogin: checked })} />
-              <PreferenceToggle label="开机后启动机器人" detail="自动启动 AstrBot、NapCat 与 QQ" checked={preferences.startBotAtLogin} disabled={!preferences.launchAtLogin} onChange={(checked) => void updatePreference({ startBotAtLogin: checked })} />
+              <PreferenceToggle label="开机启动控制台" detail="登录 Windows 后在托盘运行" checked={preferences.launchAtLogin} disabled={savingPreference} onChange={(checked) => void updatePreference({ launchAtLogin: checked })} />
+              <PreferenceToggle label="开机后启动机器人" detail="随 Windows 启动 AstrBot 和 SnowLuma，再按下方选项处理 QQ" checked={preferences.startBotAtLogin} disabled={!preferences.launchAtLogin || savingPreference} onChange={(checked) => void updatePreference({ startBotAtLogin: checked })} />
+              <PreferenceToggle label="打开 Rosemewbot 时启动机器人" detail="手动打开应用时也自动启动，无需再点运行按钮" checked={preferences.startBotOnLaunch} disabled={savingPreference} onChange={(checked) => void updatePreference({ startBotOnLaunch: checked })} />
+              <PreferenceToggle label="自动登录 SnowLuma" detail="打开内嵌管理页时自动使用已保存的登录凭据，并在会话失效后续接" checked={preferences.autoLoginSnowLuma} disabled={savingPreference} onChange={(checked) => void updatePreference({ autoLoginSnowLuma: checked })} />
               <div className="setting-row auto-login-setting">
                 <div className="setting-copy">
-                  <strong>自动登录 QQ</strong>
+                  <strong>机器人 QQ 账号</strong>
                   <small>{accountListError ?? (preferences.autoLoginAccount
-                    ? `启动时尝试快速登录 QQ ${preferences.autoLoginAccount}；会话失效时仍需扫码`
-                    : "选择 NapCat 已记录的账号；不会保存 QQ 密码")}</small>
+                    ? `仅连接 QQ ${preferences.autoLoginAccount}，不接入其他账号`
+                    : "选择或输入要使用的 QQ 号；首次登录和会话失效时需要扫码")}</small>
                 </div>
                 <div className="account-select-control">
                   <select
-                    aria-label="自动登录 QQ"
+                    aria-label="机器人 QQ 账号"
                     value={preferences.autoLoginAccount ?? ""}
-                    disabled={accountListLoading}
+                    disabled={accountListLoading || savingPreference}
                     onChange={(event) => void updatePreference({ autoLoginAccount: event.target.value || null })}
                   >
-                    <option value="">不指定，手动登录</option>
+                    <option value="">未指定账号</option>
                     {selectableQQAccounts.map((item) => (
                       <option key={item.account} value={item.account}>
                         {item.nickname ? `${item.nickname} (${item.account})` : `QQ ${item.account}`}
                       </option>
                     ))}
                   </select>
-                  <button className="account-refresh-button" type="button" title="刷新 NapCat 账号" aria-label="刷新 NapCat 账号" disabled={accountListLoading} onClick={() => void refreshQQAccounts()}>
+                  <button className="account-refresh-button" type="button" title="刷新 SnowLuma 账号" aria-label="刷新 SnowLuma 账号" disabled={accountListLoading} onClick={() => void refreshQQAccounts()}>
                     <RefreshCw size={15} className={accountListLoading ? "spin" : ""} />
                   </button>
                 </div>
               </div>
-              <PreferenceToggle label="掉线自动恢复" detail="确认异常后自动重启组件" checked={preferences.autoRecovery} onChange={(checked) => void updatePreference({ autoRecovery: checked })} />
+              <form className="setting-row" onSubmit={(event) => {
+                event.preventDefault();
+                const account = accountDraft.trim();
+                if (account && !/^[1-9]\d{4,11}$/.test(account)) {
+                  setActionFeedback({ ok: false, message: "请输入有效的 QQ 号" });
+                  return;
+                }
+                void updatePreference({ autoLoginAccount: account || null });
+              }}>
+                <div className="setting-copy"><strong>手动指定 QQ 号</strong><small>账号还没启动时，也可以提前设置。</small></div>
+                <div className="account-input-control">
+                  <input aria-label="手动指定 QQ 号" inputMode="numeric" maxLength={12} value={accountDraft} disabled={savingPreference} onChange={(event) => setAccountDraft(event.target.value)} />
+                  <button className="button button-secondary" type="submit" disabled={savingPreference || accountDraft.trim() === (preferences.autoLoginAccount ?? "")}>保存</button>
+                </div>
+              </form>
+              <PreferenceToggle label="自动启动 QQ" detail="机器人启动时打开官方 QQ，使用 QQ 自己保存的自动登录设置；已有窗口时不重复打开" checked={preferences.autoStartQQ} disabled={!preferences.autoLoginAccount || savingPreference} onChange={(checked) => void updatePreference({ autoStartQQ: checked })} />
+              <PreferenceToggle label="自动连接指定 QQ" detail="登录后自动接入 SnowLuma 并连接 AstrBot；关闭会断开机器人连接，QQ 保持登录" checked={preferences.autoConnectQQ} disabled={!preferences.autoLoginAccount || savingPreference} onChange={(checked) => void updatePreference({ autoConnectQQ: checked })} />
+              <PreferenceToggle label="掉线自动恢复" detail="恢复异常组件；QQ 会话失效时等待登录，不会反复重启 QQ" checked={preferences.autoRecovery} disabled={savingPreference} onChange={(checked) => void updatePreference({ autoRecovery: checked })} />
             </div>
           </section>
         )}
@@ -1735,7 +1764,7 @@ function DiagnosticsView({ status, config, onRefresh }: { status: StackStatus; c
           <div className="quick-reference-title"><Settings2 size={16} />本机入口</div>
           <dl>
             <div><dt>AstrBot</dt><dd><PanelTextLink panel="astrbot" href={config.astrbotUrl} /></dd></div>
-            <div><dt>NapCat</dt><dd><PanelTextLink panel="napcat" href={config.napcatUrl} /></dd></div>
+            <div><dt>SnowLuma</dt><dd><PanelTextLink panel="napcat" href={config.napcatUrl} /></dd></div>
             <div><dt>反向 WS</dt><dd><code>{config.onebotUrl}</code></dd></div>
           </dl>
           <div className="reference-divider" />

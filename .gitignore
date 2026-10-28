@@ -11,4 +11,7 @@ release/
 dist-electron/
 __pycache__/
 *.py[cod]
+# Independent plugin repositories kept as local checkouts.
+/astrbot-plugin-jmdownloader/
+/plugins/astrbot_plugin_today_wife/
 Rosemewbot_游戏社群助手_V1.0_产品设计案.md

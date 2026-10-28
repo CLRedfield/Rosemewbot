@@ -14,7 +14,7 @@ const host = process.env.HOST ?? "127.0.0.1";
 
 const internal = {
   astrbotUrl: process.env.ASTRBOT_INTERNAL_URL ?? "http://127.0.0.1:6185",
-  napcatUrl: process.env.NAPCAT_INTERNAL_URL ?? "http://127.0.0.1:6099",
+  napcatUrl: process.env.SNOWLUMA_INTERNAL_URL ?? process.env.NAPCAT_INTERNAL_URL ?? "http://127.0.0.1:5099",
   onebotHost: process.env.ONEBOT_HOST ?? "127.0.0.1",
   onebotPort: Number.parseInt(process.env.ONEBOT_PORT ?? "6199", 10),
   timeoutMs: Number.parseInt(process.env.STATUS_TIMEOUT_MS ?? "2500", 10),
@@ -22,7 +22,7 @@ const internal = {
 
 const publicConfig: PublicConfig = {
   astrbotUrl: process.env.PUBLIC_ASTRBOT_URL ?? "http://localhost:6185",
-  napcatUrl: process.env.PUBLIC_NAPCAT_URL ?? "http://localhost:6099/webui",
+  napcatUrl: process.env.PUBLIC_SNOWLUMA_URL ?? process.env.PUBLIC_NAPCAT_URL ?? "http://localhost:5099",
   onebotUrl: "ws://127.0.0.1:6199/ws",
   bindMode: (process.env.BIND_HOST ?? "127.0.0.1") === "127.0.0.1" ? "local" : "network",
 };

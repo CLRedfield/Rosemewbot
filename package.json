@@ -1,7 +1,7 @@
 {
   "name": "rosemewbot",
-  "version": "0.6.4",
-  "description": "Windows-native AstrBot and NapCat QQ assistant with one-click setup.",
+  "version": "0.6.6",
+  "description": "Windows-native AstrBot and SnowLuma QQ assistant with one-click setup.",
   "productName": "Rosemewbot",
   "author": "Rosemewbot",
   "license": "MIT",

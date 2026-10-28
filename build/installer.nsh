@@ -44,7 +44,7 @@ Function InstallLocationPageCreate
   ${NSD_CreateRadioButton} 0u 57u 100% 16u "自定义位置"
   Pop $CustomInstallRadio
 
-  ${NSD_CreateLabel} 18u 76u 92% 24u "选择 D 盘或其他父目录；程序、AstrBot、NapCat、独立 Python 与数据会放在其中。"
+  ${NSD_CreateLabel} 18u 76u 92% 24u "选择 D 盘或其他父目录；程序、AstrBot、SnowLuma、独立 Python 与数据会放在其中。"
   Pop $0
 
   ${NSD_CreateText} 18u 108u 72% 13u "$RecommendedInstallDir"

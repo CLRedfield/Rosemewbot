@@ -24,18 +24,15 @@ import extract from "extract-zip";
 
 import componentLock from "../config/components-lock.json";
 import { collectStatus } from "../src/server/probe.js";
-import { NapCatStatusClient, type NapCatQuickLoginAccount, type QQSessionStatus } from "./napcat-status.js";
+import { type NapCatQuickLoginAccount, type QQSessionStatus } from "./napcat-status.js";
+import { SnowLumaClient, SNOWLUMA_CONSOLE_PRELOAD, reconcileSnowLumaConfig, selectSnowLumaProcess } from "./snowluma.js";
+import { booleanPreferenceKeys, defaultStartupPreferences, type StartupPreferences } from "./startup-policy.js";
 
-export type NativeAction = "install" | "install-qq" | "start" | "stop" | "restart" | "update" | "repair" | "rollback" | "reset-astrbot-credentials";
+export type NativeAction = "install" | "install-qq" | "open-qq" | "start" | "stop" | "restart" | "update" | "repair" | "rollback" | "reset-astrbot-credentials";
 export type NativeServiceId = "astrbot" | "napcat";
 export type AstrBotCredentialState = "pending" | "ready" | "out-of-sync";
 
-export interface NativePreferences {
-  launchAtLogin: boolean;
-  startBotAtLogin: boolean;
-  autoRecovery: boolean;
-  autoLoginAccount: string | null;
-}
+export interface NativePreferences extends StartupPreferences {}
 
 interface StoredPreferences extends NativePreferences {
   desiredRunning: boolean;
@@ -207,7 +204,8 @@ export interface CompatibilityOperation {
 
 interface RuntimeManifest {
   astrbotVersion?: string;
-  napcatVersion?: string;
+  napcatVersion?: string; // Retained for rollback to the previous application.
+  snowlumaVersion?: string;
   uvVersion?: string;
   updatedAt?: string;
   policyVersion?: string;
@@ -230,11 +228,13 @@ interface RuntimeSecrets {
   astrbotUsername: string;
   astrbotPassword: string;
   napcatToken: string;
+  snowlumaPassword?: string;
 }
 
 interface ProcessRecord {
   astrbot?: number;
   napcat?: number;
+  qq?: number;
   startedAt?: Partial<Record<NativeServiceId, string>>;
 }
 
@@ -262,6 +262,7 @@ export const COMPONENT_POLICY = componentLock as {
   python: { version: string; installSources?: Array<{ name: string; mirrorUrl: string }> };
   uv: { repository: string; version: string; asset: string; sha256: string; downloadSources?: DownloadSource[] };
   astrbot: { package: string; version: string; installSources?: AstrBotInstallSource[] };
+  snowluma: { repository: string; version: string; asset: string; sha256: string; downloadSources?: DownloadSource[] };
   napcat: { repository: string; version: string; asset: string; sha256: string; downloadSources?: DownloadSource[] };
   qq: { minimumBuild: number; testedBuild: number; downloadUrl: string };
 };
@@ -276,10 +277,7 @@ const managedAstrBotPlatformId = "rosemewbot-qq";
 const legacyAstrBotPlatformId = "agent-space-qq";
 
 const defaultPreferences: StoredPreferences = {
-  launchAtLogin: false,
-  startBotAtLogin: false,
-  autoRecovery: true,
-  autoLoginAccount: null,
+  ...defaultStartupPreferences,
   desiredRunning: false,
 };
 
@@ -503,7 +501,7 @@ export function getComponentCompatibilityStatus(installedVersion: string | null 
 }
 
 export function buildComponentMaintenancePlan(
-  manifest: Pick<RuntimeManifest, "astrbotVersion" | "napcatVersion" | "uvVersion">,
+  manifest: Pick<RuntimeManifest, "astrbotVersion" | "snowlumaVersion" | "uvVersion">,
   installed: { astrbot: boolean; napcat: boolean; uv: boolean },
   action: "update" | "repair",
 ): ComponentMaintenancePlan {
@@ -515,7 +513,7 @@ export function buildComponentMaintenancePlan(
   return {
     uv: needs(manifest.uvVersion, COMPONENT_POLICY.uv.version, installed.uv),
     astrbot: needs(manifest.astrbotVersion, COMPONENT_POLICY.astrbot.version, installed.astrbot),
-    napcat: needs(manifest.napcatVersion, COMPONENT_POLICY.napcat.version, installed.napcat),
+    napcat: needs(manifest.snowlumaVersion, COMPONENT_POLICY.snowluma.version, installed.napcat),
   };
 }
 
@@ -985,7 +983,7 @@ export class NativeRuntimeManager {
   private progressFloor = 0;
 
   private readonly astrbotRoot: string;
-  private readonly napcatRoot: string;
+  private readonly snowlumaRoot: string;
   private readonly toolsRoot: string;
   private readonly binRoot: string;
   private readonly pythonRoot: string;
@@ -1001,13 +999,14 @@ export class NativeRuntimeManager {
   private unhealthyChecks = 0;
   private wasHealthy = false;
   private recoveryAttempted = false;
-  private readonly napcatStatus = new NapCatStatusClient();
+  private readonly snowlumaStatus = new SnowLumaClient();
+  private qqLaunchPending = false;
   private napcatQQProcessCache: { checkedAt: number; pids: number[] } = { checkedAt: 0, pids: [] };
 
   constructor(userDataDir: string, onProgress: (progress: InstallProgress) => void = () => undefined) {
     this.runtimeDir = path.join(userDataDir, "native-runtime");
     this.astrbotRoot = path.join(this.runtimeDir, "astrbot");
-    this.napcatRoot = path.join(this.runtimeDir, "napcat");
+    this.snowlumaRoot = path.join(this.runtimeDir, "snowluma");
     this.toolsRoot = path.join(this.runtimeDir, "tools");
     this.binRoot = path.join(this.runtimeDir, "bin");
     this.pythonRoot = path.join(this.runtimeDir, "python");
@@ -1015,7 +1014,7 @@ export class NativeRuntimeManager {
     this.downloadsRoot = path.join(this.runtimeDir, "downloads");
     this.logsRoot = path.join(this.runtimeDir, "logs");
     this.snapshotsRoot = path.join(this.runtimeDir, "snapshots");
-    this.lastGoodSnapshotRoot = path.join(this.snapshotsRoot, "last-good");
+    this.lastGoodSnapshotRoot = path.join(this.snapshotsRoot, "last-good-snowluma");
     this.manifestPath = path.join(this.runtimeDir, "manifest.json");
     this.secretsPath = path.join(this.runtimeDir, "secrets.json");
     this.processesPath = path.join(this.runtimeDir, "processes.json");
@@ -1070,7 +1069,7 @@ export class NativeRuntimeManager {
   async initialize() {
     await Promise.all([
       mkdir(this.astrbotRoot, { recursive: true }),
-      mkdir(this.napcatRoot, { recursive: true }),
+      mkdir(this.snowlumaRoot, { recursive: true }),
       mkdir(this.toolsRoot, { recursive: true }),
       mkdir(this.binRoot, { recursive: true }),
       mkdir(this.pythonRoot, { recursive: true }),
@@ -1086,12 +1085,13 @@ export class NativeRuntimeManager {
   private async ensurePreferences(): Promise<StoredPreferences> {
     const stored = await readJson<Partial<StoredPreferences>>(this.preferencesPath, {});
     const preferences: StoredPreferences = {
-      launchAtLogin: typeof stored.launchAtLogin === "boolean" ? stored.launchAtLogin : defaultPreferences.launchAtLogin,
-      startBotAtLogin: typeof stored.startBotAtLogin === "boolean" ? stored.startBotAtLogin : defaultPreferences.startBotAtLogin,
-      autoRecovery: typeof stored.autoRecovery === "boolean" ? stored.autoRecovery : defaultPreferences.autoRecovery,
+      ...defaultPreferences,
       autoLoginAccount: normalizeQQAccount(stored.autoLoginAccount),
       desiredRunning: typeof stored.desiredRunning === "boolean" ? stored.desiredRunning : defaultPreferences.desiredRunning,
     };
+    for (const key of booleanPreferenceKeys) {
+      if (typeof stored[key] === "boolean") preferences[key] = stored[key];
+    }
     if (JSON.stringify(stored) !== JSON.stringify(preferences)) await writeJson(this.preferencesPath, preferences);
     return preferences;
   }
@@ -1101,9 +1101,20 @@ export class NativeRuntimeManager {
     return preferences;
   }
 
+  async prepareApplicationLaunch(automaticStart: boolean) {
+    if (automaticStart) return;
+    const records = await this.processRecords();
+    const running = await Promise.all((["astrbot", "napcat"] as const).map((id) => this.managedProcessRunning(id, records[id])));
+    // A stale desiredRunning from before shutdown must not bypass the startup
+    // switches through crash recovery. Existing background services are retained.
+    if (!running.some(Boolean)) await this.setDesiredRunning(false);
+  }
+
   async setPreferences(next: Partial<NativePreferences>): Promise<NativePreferences> {
     const stored = await this.ensurePreferences();
-    for (const key of ["launchAtLogin", "startBotAtLogin", "autoRecovery"] as const) {
+    const previousAccount = stored.autoLoginAccount;
+    const previousAutoConnect = stored.autoConnectQQ;
+    for (const key of booleanPreferenceKeys) {
       if (typeof next[key] === "boolean") stored[key] = next[key];
     }
     if (Object.prototype.hasOwnProperty.call(next, "autoLoginAccount")) {
@@ -1111,10 +1122,30 @@ export class NativeRuntimeManager {
     }
     if (!stored.launchAtLogin) stored.startBotAtLogin = false;
     await writeJson(this.preferencesPath, stored);
+    if (!stored.autoStartQQ) this.qqLaunchPending = false;
+    if (previousAccount !== stored.autoLoginAccount || previousAutoConnect !== stored.autoConnectQQ) {
+      const records = await this.processRecords();
+      const bridgeRunning = await this.managedProcessRunning("napcat", records.napcat);
+      if (bridgeRunning) {
+        await this.snowlumaStatus.detachSelected(await this.getNapCatToken(), previousAccount).catch(() => undefined);
+      }
+      this.snowlumaStatus.reset();
+      if (await fileExists(path.join(this.snowlumaRoot, "index.mjs"))) await this.configureSnowLuma();
+      if (bridgeRunning && stored.autoLoginAccount) {
+        const { mode: _mode, ...config } = await readJson<Record<string, unknown>>(
+          path.join(this.snowlumaRoot, "config", `onebot_${stored.autoLoginAccount}.json`), {},
+        );
+        // Apply to an already loaded account as well as to its next launch.
+        await this.snowlumaStatus.api(await this.getNapCatToken(), `/api/config/${stored.autoLoginAccount}`, config);
+      }
+      this.recoveryAttempted = false;
+      this.unhealthyChecks = 0;
+    }
     return this.getPreferences();
   }
 
   private async setDesiredRunning(value: boolean) {
+    if (!value) this.qqLaunchPending = false;
     const stored = await this.ensurePreferences();
     if (stored.desiredRunning === value) return;
     stored.desiredRunning = value;
@@ -1136,7 +1167,7 @@ export class NativeRuntimeManager {
     const manifest = await readJson<RuntimeManifest>(this.manifestPath, {});
     const sources = [
       components.astrbot ? { source: path.join(this.astrbotRoot, "data"), name: "astrbot-data" } : null,
-      components.napcat ? { source: this.napcatRoot, name: "napcat" } : null,
+      components.napcat ? { source: this.snowlumaRoot, name: "snowluma" } : null,
       components.astrbot ? { source: this.toolsRoot, name: "tools" } : null,
       components.astrbot || components.uv ? { source: this.binRoot, name: "bin" } : null,
     ].filter((entry): entry is { source: string; name: string } => Boolean(entry));
@@ -1158,7 +1189,7 @@ export class NativeRuntimeManager {
       components,
       versions: {
         astrbot: normalizeComponentVersion(manifest.astrbotVersion),
-        napcat: normalizeComponentVersion(manifest.napcatVersion),
+        napcat: normalizeComponentVersion(manifest.snowlumaVersion),
         uv: normalizeComponentVersion(manifest.uvVersion),
       },
     };
@@ -1184,7 +1215,7 @@ export class NativeRuntimeManager {
     this.setProgress({ stage: "installing", component: "runtime", percent: 35, detail: "正在恢复上一可用组件" });
 
     const entries = [
-      { source: path.join(this.lastGoodSnapshotRoot, "napcat"), target: this.napcatRoot },
+      { source: path.join(this.lastGoodSnapshotRoot, "snowluma"), target: this.snowlumaRoot },
       { source: path.join(this.lastGoodSnapshotRoot, "tools"), target: this.toolsRoot },
       { source: path.join(this.lastGoodSnapshotRoot, "bin"), target: this.binRoot },
       { source: path.join(this.lastGoodSnapshotRoot, "astrbot-data"), target: path.join(this.astrbotRoot, "data") },
@@ -1229,10 +1260,10 @@ export class NativeRuntimeManager {
       },
       {
         id: "napcat",
-        label: "NapCat",
-        installedVersion: normalizeComponentVersion(manifest.napcatVersion),
-        targetVersion: COMPONENT_POLICY.napcat.version,
-        status: getComponentCompatibilityStatus(manifest.napcatVersion, COMPONENT_POLICY.napcat.version, installed.napcat),
+        label: "SnowLuma",
+        installedVersion: normalizeComponentVersion(manifest.snowlumaVersion),
+        targetVersion: COMPONENT_POLICY.snowluma.version,
+        status: getComponentCompatibilityStatus(manifest.snowlumaVersion, COMPONENT_POLICY.snowluma.version, installed.napcat),
       },
       {
         id: "uv",
@@ -1300,6 +1331,7 @@ export class NativeRuntimeManager {
         ? existing.astrbotPassword
         : randomDashboardPassword(),
       napcatToken: existing?.napcatToken || randomSecret(),
+      snowlumaPassword: existing?.snowlumaPassword || randomDashboardPassword(),
     };
     if (!existing || JSON.stringify(existing) !== JSON.stringify(secrets)) await writeJson(this.secretsPath, secrets);
     return secrets;
@@ -1555,98 +1587,74 @@ export class NativeRuntimeManager {
     await this.configureAstrBot(executable);
   }
 
-  private async configureNapCat(root = this.napcatRoot) {
+  private async configureSnowLuma(root = this.snowlumaRoot) {
     const configRoot = path.join(root, "config");
-    const secrets = await this.ensureSecrets();
-    await writeJson(path.join(configRoot, "webui.json"), buildNapCatWebUiConfig(secrets.napcatToken));
-    const defaultOneBotPath = path.join(configRoot, "onebot11.json");
-    const defaultOneBot = await readJson<Record<string, unknown>>(defaultOneBotPath, {});
-    await writeJson(defaultOneBotPath, reconcileNapCatOneBotConfig(defaultOneBot));
-    const accountConfigs = await readdir(configRoot).catch(() => []);
-    for (const name of accountConfigs.filter((item) => /^onebot11_[1-9]\d{4,11}\.json$/i.test(item))) {
-      const target = path.join(configRoot, name);
-      const accountConfig = await readJson<Record<string, unknown>>(target, {});
-      await writeJson(target, reconcileNapCatOneBotConfig(accountConfig));
-    }
-    const napcatConfigPath = path.join(configRoot, "napcat.json");
-    if (!await fileExists(napcatConfigPath)) {
-      await writeJson(napcatConfigPath, {
-        fileLog: true,
-        consoleLog: true,
-        fileLogLevel: "info",
-        consoleLogLevel: "info",
-        packetBackend: "auto",
-        packetServer: "",
-        o3HookMode: 1,
-      });
+    await mkdir(configRoot, { recursive: true });
+    await writeFile(path.join(root, "rosemewbot-console.mjs"), SNOWLUMA_CONSOLE_PRELOAD, "utf8");
+    const runtime = await readJson<Record<string, unknown>>(path.join(configRoot, "runtime.json"), {});
+    await writeJson(path.join(configRoot, "runtime.json"), { ...runtime, webuiHost: "127.0.0.1", webuiPort: 5099, hookAutoLoad: false });
+    // Only the chosen account receives the managed connection. Other QQ accounts are never auto-loaded.
+    const defaults = path.join(configRoot, "onebot.json");
+    if (!await fileExists(defaults)) await writeJson(defaults, {
+      networks: { httpServers: [], httpClients: [], wsServers: [], wsClients: [] },
+      statusCommand: { enabled: false, swallow: false, cooldownSeconds: 5, trigger: "#sl" }, historySync: { enabled: false },
+    });
+    const { autoLoginAccount, autoConnectQQ } = await this.ensurePreferences();
+    if (autoLoginAccount) {
+      const astrbot = await readJson<{ platform?: Array<Record<string, unknown>> }>(path.join(this.astrbotRoot, "data", "cmd_config.json"), {});
+      const platform = astrbot.platform?.find((item) => item.id === managedAstrBotPlatformId || item.id === legacyAstrBotPlatformId);
+      const token = typeof platform?.ws_reverse_token === "string" ? platform.ws_reverse_token : "";
+      const target = path.join(configRoot, `onebot_${autoLoginAccount}.json`);
+      const existing = await readJson<Record<string, unknown>>(target, {});
+      await writeJson(target, { ...reconcileSnowLumaConfig(existing, token, autoConnectQQ), mode: "snapshot" });
     }
   }
 
-  private async downloadNapCatArchive() {
-    const archive = path.join(this.downloadsRoot, `NapCat.Shell-${COMPONENT_POLICY.napcat.version}.zip`);
-    if (await hasVerifiedDigest(archive, COMPONENT_POLICY.napcat.sha256)) {
-      this.setProgress({ stage: "checking", component: "napcat", percent: 82, detail: "NapCat 安装包已通过校验，直接复用本地缓存" });
-      return archive;
-    }
-    const sources = await this.prioritizeDownloadSources(
-      "NapCat",
-      fallbackDownloadSources(COMPONENT_POLICY.napcat),
-      "napcat",
-      55,
-    );
-    const download = await downloadFile(sources, archive, (downloaded, total, context) => {
-      const fraction = total ? downloaded / total : 0;
-      this.setProgress({
-        stage: "downloading",
-        component: "napcat",
-        percent: Math.min(82, 55 + Math.round(fraction * 27)),
-        detail: `下载 NapCat ${formatMegabytes(downloaded)}${total ? ` / ${formatMegabytes(total)}` : ""} · ${context.source.name} · 第 ${context.attempt}/${context.maxAttempts} 次`,
-      });
-    }, { sha256: COMPONENT_POLICY.napcat.sha256 });
-    if (download.cached) {
-      this.setProgress({ stage: "checking", component: "napcat", percent: 82, detail: "NapCat 安装包已通过校验，直接复用本地缓存" });
+  private async downloadSnowLumaArchive() {
+    const policy = COMPONENT_POLICY.snowluma;
+    const archive = path.join(this.downloadsRoot, policy.asset);
+    if (!await hasVerifiedDigest(archive, policy.sha256)) {
+      await downloadFile(fallbackDownloadSources(policy), archive, (downloaded, total) => {
+        this.setProgress({ stage: "downloading", component: "napcat", percent: 80,
+          detail: `下载 SnowLuma ${formatMegabytes(downloaded)}${total ? " / " + formatMegabytes(total) : ""}` });
+      }, { sha256: policy.sha256 });
     }
     return archive;
   }
 
-  private async prepareNapCat(force = false, preparedArchive?: string) {
-    const executable = path.join(this.napcatRoot, "NapCatWinBootMain.exe");
-    if (!force && await fileExists(executable)) {
-      await this.configureNapCat();
-      return;
+  private async prepareSnowLuma(force = false, preparedArchive?: string) {
+    const executable = path.join(this.snowlumaRoot, "node.exe");
+    if (!force && await fileExists(executable) && await fileExists(path.join(this.snowlumaRoot, "index.mjs"))) {
+      await this.configureSnowLuma();
+      return executable;
     }
-
-    const archive = preparedArchive ?? await this.downloadNapCatArchive();
-
-    const staging = path.join(this.runtimeDir, `staging-napcat-${process.pid}-${Date.now()}`);
-    await this.removeManagedPath(staging);
+    const archive = preparedArchive ?? await this.downloadSnowLumaArchive();
+    const staging = path.join(this.runtimeDir, `staging-snowluma-${process.pid}-${Date.now()}`);
+    this.assertManagedPath(staging);
     await mkdir(staging, { recursive: true });
-    this.setProgress({ stage: "installing", component: "napcat", percent: 84, detail: "正在安装 NapCat" });
+    this.setProgress({ stage: "installing", component: "napcat", percent: 84, detail: "正在准备 SnowLuma" });
     await extract(archive, { dir: staging });
-    if (!await fileExists(path.join(staging, "NapCatWinBootMain.exe"))) throw new Error("NapCat 压缩包结构不完整");
-    if (await fileExists(path.join(this.napcatRoot, "config"))) {
-      await cp(path.join(this.napcatRoot, "config"), path.join(staging, "config"), { recursive: true, force: true });
+    if (!await fileExists(path.join(staging, "node.exe")) || !await fileExists(path.join(staging, "index.mjs"))) throw new Error("SnowLuma 发行包不完整");
+    // Persisted configs, message databases and update state live outside the shipped files.
+    for (const name of ["config", "data", "logs"]) {
+      const source = path.join(this.snowlumaRoot, name);
+      if (await fileExists(source)) await copyTree(source, path.join(staging, name));
     }
-    await this.configureNapCat(staging);
-
-    const backup = path.join(this.runtimeDir, `backup-napcat-${process.pid}-${Date.now()}`);
-    const hadExistingInstall = await fileExists(this.napcatRoot);
-    if (hadExistingInstall) await rename(this.napcatRoot, backup);
-    try {
-      await rename(staging, this.napcatRoot);
-    } catch (error) {
-      if (!await fileExists(this.napcatRoot) && await fileExists(backup)) {
-        await rename(backup, this.napcatRoot);
-      }
+    await this.configureSnowLuma(staging);
+    const backup = path.join(this.runtimeDir, `backup-snowluma-${process.pid}-${Date.now()}`);
+    const existing = await fileExists(this.snowlumaRoot);
+    if (existing) await rename(this.snowlumaRoot, backup);
+    try { await rename(staging, this.snowlumaRoot); }
+    catch (error) {
+      if (existing && !await fileExists(this.snowlumaRoot)) await rename(backup, this.snowlumaRoot);
       throw error;
     }
-    if (hadExistingInstall) void this.removeManagedPathBestEffort(backup);
-
     const manifest = await readJson<RuntimeManifest>(this.manifestPath, {});
-    manifest.napcatVersion = COMPONENT_POLICY.napcat.version;
+    manifest.snowlumaVersion = COMPONENT_POLICY.snowluma.version;
     manifest.policyVersion = COMPONENT_POLICY.policyVersion;
     manifest.updatedAt = new Date().toISOString();
     await writeJson(this.manifestPath, manifest);
+    return executable;
   }
 
   async findQQPath() {
@@ -1746,7 +1754,7 @@ export class NativeRuntimeManager {
     }
     await this.initialize();
     await this.prepareAstrBot(force);
-    await this.prepareNapCat(force);
+    await this.prepareSnowLuma(force);
     const qqPath = await this.findQQPath();
     this.setProgress({
       stage: "complete",
@@ -1756,7 +1764,7 @@ export class NativeRuntimeManager {
     });
     return qqPath
       ? { ok: true, message: "本机机器人组件已准备完成" }
-      : { ok: true, code: "QQ_REQUIRED", message: "AstrBot 与 NapCat 已准备完成，请继续安装 Windows QQ" } satisfies NativeActionResult;
+      : { ok: true, code: "QQ_REQUIRED", message: "AstrBot 与 SnowLuma 已准备完成，请继续安装 Windows QQ" } satisfies NativeActionResult;
   }
 
   private async prepareMaintenanceComponents(
@@ -1769,7 +1777,7 @@ export class NativeRuntimeManager {
 
     if (plan.astrbot) await this.prepareAstrBot(true, false);
 
-    if (plan.napcat) await this.prepareNapCat(true, prepared.napcatArchive);
+    if (plan.napcat) await this.prepareSnowLuma(true, prepared.napcatArchive);
 
     const manifest = await readJson<RuntimeManifest>(this.manifestPath, {});
     manifest.policyVersion = COMPONENT_POLICY.policyVersion;
@@ -1785,7 +1793,7 @@ export class NativeRuntimeManager {
     const manifest = await readJson<RuntimeManifest>(this.manifestPath, {});
     const expected = [
       ["AstrBot", manifest.astrbotVersion, COMPONENT_POLICY.astrbot.version],
-      ["NapCat", manifest.napcatVersion, COMPONENT_POLICY.napcat.version],
+      ["SnowLuma", manifest.snowlumaVersion, COMPONENT_POLICY.snowluma.version],
       ["uv", manifest.uvVersion, COMPONENT_POLICY.uv.version],
     ] as const;
     for (const [label, current, target] of expected) {
@@ -1794,18 +1802,17 @@ export class NativeRuntimeManager {
       }
     }
     if (!await fileExists(path.join(this.binRoot, "astrbot.exe"))) throw new Error("AstrBot 启动程序验收失败");
-    if (!await fileExists(path.join(this.napcatRoot, "NapCatWinBootMain.exe"))) throw new Error("NapCat 启动程序验收失败");
+    if (!await fileExists(path.join(this.snowlumaRoot, "node.exe"))) throw new Error("SnowLuma 启动程序验收失败");
 
     const astrbotConfig = await readJson<Record<string, unknown>>(path.join(this.astrbotRoot, "data", "cmd_config.json"), {});
     if (!inspectAstrBotConfig(astrbotConfig).onebotConfigured) throw new Error("AstrBot OneBot 连接契约验收失败");
-    const napcatConfig = await readJson<Record<string, unknown>>(path.join(this.napcatRoot, "config", "onebot11.json"), {});
-    if (!hasManagedNapCatConnection(napcatConfig)) throw new Error("NapCat OneBot 连接契约验收失败");
+    if (!await fileExists(path.join(this.snowlumaRoot, "index.mjs"))) throw new Error("SnowLuma 入口文件验收失败");
   }
 
   private async managementServicesHealthy() {
     const stack = await collectStatus({
       astrbotUrl: "http://127.0.0.1:6185",
-      napcatUrl: "http://127.0.0.1:6099",
+      napcatUrl: "http://127.0.0.1:5099",
       onebotHost: "127.0.0.1",
       onebotPort: 6199,
       timeoutMs: 1_500,
@@ -1824,15 +1831,14 @@ export class NativeRuntimeManager {
 
   private async maintainCompatibleComponents(action: "update" | "repair"): Promise<NativeActionResult> {
     await this.initialize();
-    const [manifest, preferences, records, injectedQQPids] = await Promise.all([
+    const [manifest, preferences, records] = await Promise.all([
       readJson<RuntimeManifest>(this.manifestPath, {}),
       this.ensurePreferences(),
       this.processRecords(),
-      this.managedNapCatQQProcesses(true),
     ]);
     const installed = {
       astrbot: await fileExists(path.join(this.binRoot, "astrbot.exe")),
-      napcat: await fileExists(path.join(this.napcatRoot, "NapCatWinBootMain.exe")),
+      napcat: await fileExists(path.join(this.snowlumaRoot, "node.exe")),
       uv: await fileExists(path.join(this.binRoot, "uv.exe")),
     };
     const nativeReady = installed.astrbot && installed.napcat;
@@ -1843,9 +1849,8 @@ export class NativeRuntimeManager {
       return { ok: true, code: "ALREADY_CURRENT", message };
     }
 
-    const wasRunning = await managedProcessRunning("astrbot", records.astrbot)
-      || await managedProcessRunning("napcat", records.napcat)
-      || injectedQQPids.length > 0;
+    const wasRunning = await this.managedProcessRunning("astrbot", records.astrbot)
+      || await this.managedProcessRunning("napcat", records.napcat);
     const shouldRestart = preferences.desiredRunning || wasRunning;
     const requireLiveValidation = wasRunning && await this.managementServicesHealthy();
     const existingSnapshot = await this.getSnapshotMetadata();
@@ -1857,7 +1862,7 @@ export class NativeRuntimeManager {
     try {
       phase = "下载安装资源";
       if (plan.uv) prepared.uvArchive = await this.downloadUvArchive();
-      if (plan.napcat) prepared.napcatArchive = await this.downloadNapCatArchive();
+      if (plan.napcat) prepared.napcatArchive = await this.downloadSnowLumaArchive();
 
       phase = "安全停止旧组件";
       this.setProgress({ stage: "waiting", component: "runtime", percent: 83, detail: "安装资源已就绪，正在安全停止旧组件" });
@@ -1896,7 +1901,7 @@ export class NativeRuntimeManager {
       const message = action === "update"
         ? `已更新 ${[
           plan.astrbot ? "AstrBot" : null,
-          plan.napcat ? "NapCat" : null,
+          plan.napcat ? "SnowLuma" : null,
           plan.uv ? "运行工具" : null,
         ].filter(Boolean).join("、")}，升级前快照已保留`
         : "组件已按稳定兼容版本修复，配置与登录数据已保留";
@@ -1941,15 +1946,13 @@ export class NativeRuntimeManager {
 
   private async rollbackCompatibleComponents(): Promise<NativeActionResult> {
     if (!await this.getSnapshotMetadata()) return { ok: false, code: "NO_SNAPSHOT", message: "还没有可回滚的组件快照" };
-    const [preferences, records, injectedQQPids] = await Promise.all([
+    const [preferences, records] = await Promise.all([
       this.ensurePreferences(),
       this.processRecords(),
-      this.managedNapCatQQProcesses(true),
     ]);
     const shouldRestart = preferences.desiredRunning
-      || await managedProcessRunning("astrbot", records.astrbot)
-      || await managedProcessRunning("napcat", records.napcat)
-      || injectedQQPids.length > 0;
+      || await this.managedProcessRunning("astrbot", records.astrbot)
+      || await this.managedProcessRunning("napcat", records.napcat);
     await this.stopServices();
     const metadata = await this.restoreCompatibilitySnapshotFiles();
     if (shouldRestart) {
@@ -1973,7 +1976,7 @@ export class NativeRuntimeManager {
     await writeJson(this.processesPath, records);
   }
 
-  private async managedNapCatQQProcesses(forceRefresh = false) {
+  private async legacyNapCatQQProcesses(forceRefresh = false) {
     if (process.platform !== "win32") return [];
     if (!forceRefresh && Date.now() - this.napcatQQProcessCache.checkedAt < 10_000) {
       return this.napcatQQProcessCache.pids;
@@ -2011,32 +2014,32 @@ export class NativeRuntimeManager {
     }
   }
 
-  private async stopManagedNapCatQQ() {
-    let pids = await this.managedNapCatQQProcesses(true);
-    if (pids.length === 0) return;
+  private async managedProcessRunning(service: NativeServiceId, pid?: number) {
+    if (service === "astrbot") return managedProcessRunning(service, pid);
+    if (!pid || !Number.isSafeInteger(pid) || pid <= 0) return false;
+    try {
+      const result = await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+        "$p=Get-CimInstance Win32_Process -Filter ('ProcessId='+$env:ROSEMEWBOT_CHECK_PID); if ($p.ExecutablePath -ieq $env:ROSEMEWBOT_CHECK_EXE) { 'MATCH' }"], {
+        windowsHide: true, timeout: 5000,
+        env: { ...process.env, ROSEMEWBOT_CHECK_PID: String(pid), ROSEMEWBOT_CHECK_EXE: path.join(this.snowlumaRoot, "node.exe") },
+      });
+      return result.stdout.trim() === "MATCH";
+    } catch { return false; }
+  }
 
-    this.setProgress({ stage: "waiting", component: "napcat", percent: this.progress.percent, detail: "正在关闭 NapCat 关联的 QQ 进程并释放组件文件" });
-    await Promise.all(pids.map((pid) => this.killProcessTree(pid, false)));
-    const gracefulDeadline = Date.now() + 2_500;
-    while (Date.now() < gracefulDeadline) {
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      pids = await this.managedNapCatQQProcesses(true);
-      if (pids.length === 0) return;
-    }
-
-    await Promise.all(pids.map((pid) => this.killProcessTree(pid, true)));
-    const forcedDeadline = Date.now() + 8_000;
-    while (Date.now() < forcedDeadline) {
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      pids = await this.managedNapCatQQProcesses(true);
-      if (pids.length === 0) return;
-    }
-    throw new Error(`NapCat 关联的 QQ 进程未能退出（PID ${pids.join("、")}），组件文件仍被占用`);
+  private async stopLegacyNapCat() {
+    for (const pid of await this.legacyNapCatQQProcesses(true)) await this.killProcessTree(pid, true);
+    // Kill only the old launcher in this application's private directory, never another QQ.
+    const result = await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+      "Get-CimInstance Win32_Process -Filter \"Name='NapCatWinBootMain.exe'\" | Where-Object { $_.ExecutablePath -ieq $env:ROSEMEWBOT_LEGACY_EXE } | ForEach-Object { $_.ProcessId }"], {
+      windowsHide: true, timeout: 5000, env: { ...process.env, ROSEMEWBOT_LEGACY_EXE: path.join(this.runtimeDir, "napcat", "NapCatWinBootMain.exe") },
+    });
+    for (const pid of parseProcessIds(result.stdout)) await this.killProcessTree(pid, true);
   }
 
   private async launchDetached(service: NativeServiceId, executable: string, args: string[], cwd: string, env = process.env) {
-    const stdout = openSync(path.join(this.logsRoot, `${service}.log`), "a");
-    const stderr = openSync(path.join(this.logsRoot, `${service}.error.log`), "a");
+    const stdout = openSync(path.join(this.logsRoot, `${service === "napcat" ? "snowluma" : service}.log`), "a");
+    const stderr = openSync(path.join(this.logsRoot, `${service === "napcat" ? "snowluma" : service}.error.log`), "a");
     try {
       const child = spawn(executable, args, {
         cwd,
@@ -2069,57 +2072,76 @@ export class NativeRuntimeManager {
     await new Promise((resolve) => setTimeout(resolve, 900));
   }
 
+  private async openQQ(): Promise<NativeActionResult> {
+    const executable = await this.findQQPath();
+    if (!executable) return { ok: false, code: "QQ_REQUIRED", message: "请先安装 Windows QQ" };
+    // Use QQ's own login and saved session; do not copy or fabricate login credentials.
+    const child = spawn(executable, [], { detached: true, windowsHide: false, stdio: "ignore" });
+    await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+    child.unref();
+    const records = await this.processRecords();
+    records.qq = child.pid;
+    await this.saveProcessRecords(records);
+    const { autoLoginAccount, autoConnectQQ } = await this.ensurePreferences();
+    return { ok: true, message: `已打开 Windows QQ，请使用 QQ 保存的会话登录${autoLoginAccount ?? "机器人账号"}；${autoConnectQQ ? "登录后会自动接入" : "自动连接已关闭，可在 SnowLuma 中手动连接"}` };
+  }
+
+  private async advanceQQStartup(preferences: StoredPreferences) {
+    if (!this.qqLaunchPending || !preferences.autoStartQQ || !preferences.autoLoginAccount) return;
+    // Wait for a successful process inventory. A slow API must never open another QQ.
+    const processes = await this.snowlumaStatus.getProcessesForStartup(await this.getNapCatToken());
+    const targetPresent = !!selectSnowLumaProcess(processes, preferences.autoLoginAccount);
+    // An unidentified process may be QQ's login window. Leave it available for authentication.
+    const loginWindowPresent = processes.some((item) => !item.account && !/^[1-9]\d{4,11}$/.test(item.uin));
+    if (!targetPresent && !loginWindowPresent) {
+      const result = await this.openQQ();
+      if (!result.ok) throw new Error(result.message);
+    }
+    this.qqLaunchPending = false;
+  }
+
   private async startServices(): Promise<NativeActionResult> {
     const astrbotExecutable = path.join(this.binRoot, "astrbot.exe");
-    const napcatExecutable = path.join(this.napcatRoot, "NapCatWinBootMain.exe");
-    if (!await fileExists(astrbotExecutable) || !await fileExists(napcatExecutable)) {
-      return { ok: false, message: "本机组件尚未准备，请先点击一键准备" };
-    }
+    if (!await fileExists(astrbotExecutable)) return { ok: false, message: "本机组件尚未准备，请先点击一键准备" };
     const qqPath = await this.findQQPath();
     if (!qqPath) return { ok: false, code: "QQ_REQUIRED", message: "请先安装 Windows QQ" };
+    const executable = await this.prepareSnowLuma();
+    await this.stopLegacyNapCat();
     const records = await this.processRecords();
     const preferences = await this.ensurePreferences();
-
-    if (!await managedProcessRunning("astrbot", records.astrbot)) {
-      await this.launchAstrBot(astrbotExecutable);
-    }
-
-    const napcatRunning = await managedProcessRunning("napcat", records.napcat)
-      || (await this.managedNapCatQQProcesses(true)).length > 0;
-    if (!napcatRunning) {
-      const mainModule = path.join(this.napcatRoot, "napcat.mjs");
-      const loadPath = path.join(this.napcatRoot, "loadNapCat.js");
-      const importUrl = pathToFileURL(mainModule).href;
-      await writeFile(loadPath, `(async () => { await import(${JSON.stringify(importUrl)}); })();\n`, "utf8");
-      const napcatEnv = {
-        ...process.env,
-        NAPCAT_PATCH_PACKAGE: path.join(this.napcatRoot, "qqnt.json"),
-        NAPCAT_LOAD_PATH: loadPath,
-        NAPCAT_INJECT_PATH: path.join(this.napcatRoot, "NapCatWinBootHook.dll"),
-        NAPCAT_LAUNCHER_PATH: napcatExecutable,
-        NAPCAT_MAIN_PATH: mainModule.replace(/\\/g, "/"),
-      };
-      const napcatArgs = buildNapCatLaunchArgs(
-        qqPath,
-        path.join(this.napcatRoot, "NapCatWinBootHook.dll"),
-        preferences.autoLoginAccount,
-      );
-      await this.launchDetached("napcat", napcatExecutable, napcatArgs, this.napcatRoot, napcatEnv);
-      this.napcatQQProcessCache.checkedAt = 0;
+    if (!await this.managedProcessRunning("astrbot", records.astrbot)) await this.launchAstrBot(astrbotExecutable);
+    if (!await this.managedProcessRunning("napcat", records.napcat)) {
+      const secrets = await this.ensureSecrets();
+      this.snowlumaStatus.reset();
+      await this.launchDetached("napcat", executable, ["--import", pathToFileURL(path.join(this.snowlumaRoot, "rosemewbot-console.mjs")).href,
+        path.join(this.snowlumaRoot, "index.mjs")], this.snowlumaRoot, {
+        ...process.env, SNOWLUMA_WEBUI_BOOTSTRAP_PASSWORD: secrets.snowlumaPassword!,
+        SNOWLUMA_WEBUI_HOST: "127.0.0.1", SNOWLUMA_WEBUI_PORT: "5099", SNOWLUMA_HOOK_AUTOLOAD: "0", SNOWLUMA_TELEMETRY: "0",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 2000));
     }
     await this.setDesiredRunning(true);
-    return preferences.autoLoginAccount
-      ? { ok: true, message: `本机机器人正在启动，正在尝试快速登录 QQ ${preferences.autoLoginAccount}` }
-      : { ok: true, message: "本机机器人正在启动，请稍候扫码登录 QQ" };
+    this.qqLaunchPending = preferences.autoStartQQ;
+    await this.advanceQQStartup(preferences).catch(() => undefined);
+    if (preferences.autoConnectQQ) {
+      await this.snowlumaStatus.attachSelected(await this.getNapCatToken(), preferences.autoLoginAccount).catch(() => undefined);
+    }
+    return { ok: true, message: preferences.autoLoginAccount
+      ? `SnowLuma 与 AstrBot 正在启动；${preferences.autoConnectQQ ? `将自动接入 QQ ${preferences.autoLoginAccount}` : "QQ 自动连接已关闭"}；${preferences.autoStartQQ ? "QQ 将使用已保存的登录设置" : "QQ 自动启动已关闭，请手动打开 QQ"}`
+      : "组件正在启动，请在 Windows QQ 登录后，到设置中选择接入账号" };
   }
 
   private async stopService(service: NativeServiceId) {
     const records = await this.processRecords();
     const pid = records[service];
-    if (await managedProcessRunning(service, pid)) {
+    if (service === "napcat" && await this.managedProcessRunning(service, pid)) {
+      const { autoLoginAccount } = await this.ensurePreferences();
+      await this.snowlumaStatus.detachSelected(await this.getNapCatToken(), autoLoginAccount).catch(() => undefined);
+    }
+    if (await this.managedProcessRunning(service, pid)) {
       await this.killProcessTree(pid!, true);
     }
-    if (service === "napcat") await this.stopManagedNapCatQQ();
+    if (service === "napcat") this.snowlumaStatus.reset();
     delete records[service];
     if (records.startedAt) {
       delete records.startedAt[service];
@@ -2144,7 +2166,7 @@ export class NativeRuntimeManager {
     if (!await fileExists(executable)) return { ok: false, message: "AstrBot 尚未准备，无法重置登录密码" };
 
     const records = await this.processRecords();
-    const wasRunning = await managedProcessRunning("astrbot", records.astrbot);
+    const wasRunning = await this.managedProcessRunning("astrbot", records.astrbot);
     const configPath = path.join(this.astrbotRoot, "data", "cmd_config.json");
     const previousSecrets = await this.ensureSecrets();
     const previousConfig = await readFile(configPath).catch(() => null);
@@ -2188,6 +2210,7 @@ export class NativeRuntimeManager {
     try {
       if (action === "install") return await this.prepare(false);
       if (action === "install-qq") return await this.installQQ();
+      if (action === "open-qq") return await this.openQQ();
       if (action === "stop") return await this.stopAll();
       if (action === "restart") {
         this.recoveryAttempted = false;
@@ -2213,22 +2236,20 @@ export class NativeRuntimeManager {
 
   async getState(): Promise<NativeRuntimeState> {
     await this.initialize();
-    const [qqPath, qqVersion, records, manifest, preferences, injectedQQPids] = await Promise.all([
+    const [qqPath, qqVersion, records, manifest, preferences] = await Promise.all([
       this.findQQPath(),
       this.getQQVersion(),
       this.processRecords(),
       readJson<RuntimeManifest>(this.manifestPath, {}),
       this.getPreferences(),
-      this.managedNapCatQQProcesses(),
     ]);
     const astrbotInstalled = await fileExists(path.join(this.binRoot, "astrbot.exe"));
-    const napcatInstalled = await fileExists(path.join(this.napcatRoot, "NapCatWinBootMain.exe"));
+    const napcatInstalled = await fileExists(path.join(this.snowlumaRoot, "node.exe"));
     const uvInstalled = await fileExists(path.join(this.binRoot, "uv.exe"));
-    const [astrbotRunning, napcatLauncherRunning] = await Promise.all([
-      managedProcessRunning("astrbot", records.astrbot),
-      managedProcessRunning("napcat", records.napcat),
+    const [astrbotRunning, napcatRunning] = await Promise.all([
+      this.managedProcessRunning("astrbot", records.astrbot),
+      this.managedProcessRunning("napcat", records.napcat),
     ]);
-    const napcatRunning = napcatLauncherRunning || injectedQQPids.length > 0;
     const runningCount = [astrbotRunning, napcatRunning].filter(Boolean).length;
     const nativeReady = astrbotInstalled && napcatInstalled;
     const stackState = !nativeReady
@@ -2258,7 +2279,7 @@ export class NativeRuntimeManager {
           running: napcatRunning,
           state: !napcatInstalled ? "missing" : napcatRunning ? "running" : "stopped",
           status: !napcatInstalled ? "等待一键准备" : napcatRunning ? "本机进程运行中" : "已安装，尚未启动",
-          version: manifest.napcatVersion ?? null,
+          version: manifest.snowlumaVersion ?? null,
           startedAt: napcatRunning ? records.startedAt?.napcat ?? null : null,
         },
         {
@@ -2280,7 +2301,7 @@ export class NativeRuntimeManager {
           : !qqPath
             ? "组件已准备，请安装 Windows QQ"
             : stackState === "running"
-              ? "AstrBot 与 NapCat 正在本机运行"
+              ? "AstrBot 与 SnowLuma 正在本机运行"
               : stackState === "partial"
                 ? "部分组件需要重新启动"
                 : "本机组件已就绪",
@@ -2311,50 +2332,28 @@ export class NativeRuntimeManager {
   }
 
   private async getNapCatToken() {
-    const [secrets, webUi] = await Promise.all([
-      this.ensureSecrets(),
-      readJson<{ token?: string }>(path.join(this.napcatRoot, "config", "webui.json"), {}),
-    ]);
-    return webUi.token ?? secrets.napcatToken;
+    return (await this.ensureSecrets()).snowlumaPassword!;
+  }
+
+  async getSnowLumaSessionToken() {
+    return this.snowlumaStatus.getToken(await this.getNapCatToken());
   }
 
   private async getAcceptance(runtime: NativeRuntimeState, stack: Awaited<ReturnType<typeof collectStatus>>): Promise<NativeAcceptanceState> {
-    const napcatService = stack.services.find((service) => service.id === "napcat");
-    const napcatRunning = runtime.services.find((service) => service.id === "napcat")?.running === true;
-    const qqSessionPromise: Promise<QQSessionStatus> = !napcatRunning
-      ? Promise.resolve({ state: "unknown", account: null, nickname: null, checkedAt: new Date().toISOString(), detail: "NapCat 尚未运行" })
-      : napcatService?.state !== "ready"
-        ? Promise.resolve({ state: "unknown", account: null, nickname: null, checkedAt: new Date().toISOString(), detail: "NapCat 管理页不可达" })
-        : this.getNapCatToken()
-          .then((token) => this.napcatStatus.getSession(token))
-          .catch((error: unknown) => ({
-            state: "unknown" as const,
-            account: null,
-            nickname: null,
-            checkedAt: new Date().toISOString(),
-            detail: error instanceof Error ? error.message : "无法读取 NapCat 登录状态",
-          }));
-    const [connections, qqSession, astrbot] = await Promise.all([
-      this.getTcpConnections(),
-      qqSessionPromise,
+    const running = runtime.services.find((service) => service.id === "napcat")?.running === true;
+    const ready = stack.services.find((service) => service.id === "napcat")?.state === "ready";
+    const [snapshot, astrbot] = await Promise.all([
+      running && ready ? this.snowlumaStatus.getSnapshot(await this.getNapCatToken(), runtime.preferences.autoLoginAccount) : null,
       this.getAstrBotInspection(),
     ]);
-    const servicesReady = ["astrbot", "napcat"].every((id) => stack.services.find((service) => service.id === id)?.state === "ready");
-    const onebotConnected = connections.some((connection) => (
-      connection.state === "ESTABLISHED"
-      && (connection.localPort === 6199 || connection.remotePort === 6199)
-    ));
+    const qqSession: QQSessionStatus = snapshot?.session ?? { state: "unknown", account: null, nickname: null,
+      checkedAt: new Date().toISOString(), detail: running ? "SnowLuma 管理页暂不可达" : "SnowLuma 尚未运行" };
     return {
       componentsReady: runtime.nativeReady,
-      servicesReady,
-      qqInstalled: runtime.qqInstalled,
-      qqSession,
-      qqLoginDetected: qqSession.state === "online",
-      qqAccount: qqSession.account,
-      onebotConfigured: astrbot.onebotConfigured,
-      onebotConnected,
-      modelConfigured: astrbot.modelConfigured,
-      modelName: astrbot.modelName,
+      servicesReady: ["astrbot", "napcat"].every((id) => stack.services.find((service) => service.id === id)?.state === "ready"),
+      qqInstalled: runtime.qqInstalled, qqSession, qqLoginDetected: qqSession.state === "online", qqAccount: qqSession.account,
+      onebotConfigured: astrbot.onebotConfigured, onebotConnected: snapshot?.onebotConnected ?? false,
+      modelConfigured: astrbot.modelConfigured, modelName: astrbot.modelName,
     };
   }
 
@@ -2363,7 +2362,7 @@ export class NativeRuntimeManager {
       this.getState(),
       collectStatus({
         astrbotUrl: "http://127.0.0.1:6185",
-        napcatUrl: "http://127.0.0.1:6099",
+        napcatUrl: "http://127.0.0.1:5099",
         onebotHost: "127.0.0.1",
         onebotPort: 6199,
         timeoutMs: 1500,
@@ -2386,8 +2385,8 @@ export class NativeRuntimeManager {
       ? { id: "platform", title: "Windows 运行环境", severity: "pass", detail: "当前为受支持的 Windows x64 环境。", suggestion: null }
       : { id: "platform", title: "Windows 运行环境", severity: "error", detail: "此安装版只支持 Windows x64。", suggestion: "请改用 64 位 Windows 10 或 Windows 11。" });
     add(acceptance.componentsReady
-      ? { id: "components", title: "本机组件", severity: "pass", detail: "AstrBot 与 NapCat 程序文件完整。", suggestion: null }
-      : { id: "components", title: "本机组件", severity: "error", detail: "AstrBot 或 NapCat 尚未准备完成。", suggestion: "运行一键首次准备。", action: "install", actionLabel: "一键准备" });
+      ? { id: "components", title: "本机组件", severity: "pass", detail: "AstrBot 与 SnowLuma 程序文件完整。", suggestion: null }
+      : { id: "components", title: "本机组件", severity: "error", detail: "AstrBot 或 SnowLuma 尚未准备完成。", suggestion: "运行一键首次准备。", action: "install", actionLabel: "一键准备" });
     if (acceptance.componentsReady) {
       const credentials = await this.getCredentials();
       add(credentials.astrbotCredentialState === "ready"
@@ -2407,7 +2406,7 @@ export class NativeRuntimeManager {
       : { id: "qq-installed", title: "Windows QQ", severity: "error", detail: "没有找到 Windows QQ。", suggestion: "安装腾讯官方 Windows QQ。", action: "install-qq", actionLabel: "安装 QQ" });
 
     for (const id of ["astrbot", "napcat"] as const) {
-      const label = id === "astrbot" ? "AstrBot 服务" : "NapCat 服务";
+      const label = id === "astrbot" ? "AstrBot 服务" : "SnowLuma 服务";
       const service = stack.services.find((candidate) => candidate.id === id);
       const running = runtime.services.find((candidate) => candidate.id === id)?.running;
       add(service?.state === "ready"
@@ -2427,18 +2426,18 @@ export class NativeRuntimeManager {
     add(acceptance.qqSession.state === "online"
       ? { id: "qq-login", title: "QQ 实时状态", severity: "pass", detail: `${acceptance.qqSession.detail}。`, suggestion: null }
       : acceptance.qqSession.state === "offline"
-        ? { id: "qq-login", title: "QQ 实时状态", severity: "error", detail: `${acceptance.qqSession.detail}。`, suggestion: "打开 NapCat 重新登录 QQ。", action: "open-napcat", actionLabel: "打开 NapCat" }
+        ? { id: "qq-login", title: "QQ 实时状态", severity: "error", detail: `${acceptance.qqSession.detail}。`, suggestion: "在 Windows QQ 中重新登录，再检查 SnowLuma 接入状态。", action: "open-napcat", actionLabel: "打开 SnowLuma" }
         : acceptance.qqSession.state === "logged-out"
-          ? { id: "qq-login", title: "QQ 实时状态", severity: "warning", detail: selectedAutoLoginAccount ? `未能快速登录 QQ ${selectedAutoLoginAccount}。` : "NapCat 管理页可达，但 QQ 尚未登录。", suggestion: "打开 NapCat，使用手机 QQ 扫码登录独立测试账号。", action: "open-napcat", actionLabel: "打开 NapCat" }
-          : { id: "qq-login", title: "QQ 实时状态", severity: acceptance.servicesReady ? "warning" : "error", detail: `暂时无法确认 QQ 是否在线：${acceptance.qqSession.detail}。`, suggestion: "确认 NapCat 正常运行并检查 WebUI Token。", action: "open-napcat", actionLabel: "打开 NapCat" });
+          ? { id: "qq-login", title: "QQ 实时状态", severity: "warning", detail: selectedAutoLoginAccount ? `等待 Windows QQ 登录账号 ${selectedAutoLoginAccount}。` : "SnowLuma 管理页可达，但 QQ 尚未登录。", suggestion: "在 Windows QQ 中使用手机扫码登录辉夜账号。", action: "open-napcat", actionLabel: "打开 SnowLuma" }
+          : { id: "qq-login", title: "QQ 实时状态", severity: acceptance.servicesReady ? "warning" : "error", detail: `暂时无法确认 QQ 是否在线：${acceptance.qqSession.detail}。`, suggestion: "确认 SnowLuma 正常运行并检查管理密码。", action: "open-napcat", actionLabel: "打开 SnowLuma" });
     if (selectedAutoLoginAccount && acceptance.qqSession.state === "online") {
       const matches = acceptance.qqSession.account === selectedAutoLoginAccount;
       add(matches
-        ? { id: "qq-account-match", title: "自动登录账号", severity: "pass", detail: `当前在线账号与所选 QQ ${selectedAutoLoginAccount} 一致。`, suggestion: null }
-        : { id: "qq-account-match", title: "自动登录账号", severity: "error", detail: `计划登录 QQ ${selectedAutoLoginAccount}，实际在线账号为 ${acceptance.qqSession.account ?? "未知"}。`, suggestion: "停止机器人，确认账号选择后重新启动。", action: "restart", actionLabel: "重新启动" });
+        ? { id: "qq-account-match", title: "自动接入账号", severity: "pass", detail: `当前在线账号与所选 QQ ${selectedAutoLoginAccount} 一致。`, suggestion: null }
+        : { id: "qq-account-match", title: "自动接入账号", severity: "error", detail: `计划接入 QQ ${selectedAutoLoginAccount}，实际在线账号为 ${acceptance.qqSession.account ?? "未知"}。`, suggestion: "停止机器人，确认账号选择后重新启动。", action: "restart", actionLabel: "重新启动" });
     }
     add(acceptance.onebotConfigured && acceptance.onebotConnected
-      ? { id: "onebot", title: "OneBot 通道", severity: "pass", detail: "NapCat 已与 AstrBot 建立本机 WebSocket 连接。", suggestion: null }
+      ? { id: "onebot", title: "OneBot 通道", severity: "pass", detail: "SnowLuma 已与 AstrBot 建立本机 WebSocket 连接。", suggestion: null }
       : {
         id: "onebot",
         title: "OneBot 通道",
@@ -2464,7 +2463,7 @@ export class NativeRuntimeManager {
       });
     }
 
-    for (const port of [6099, 6185, 6199]) {
+    for (const port of [5099, 6185, 6199]) {
       const listeners = connections.filter((connection) => connection.localPort === port && connection.state === "LISTENING");
       const listenerPids = [...new Set(listeners.map((item) => item.pid))];
       if (listenerPids.length > 1) {
@@ -2493,61 +2492,64 @@ export class NativeRuntimeManager {
 
   async recoverIfNeeded(): Promise<RecoveryResult> {
     const stored = await this.ensurePreferences();
-    if (!stored.autoRecovery || !stored.desiredRunning || this.busy) return { recovered: false, message: "无需恢复" };
+    if (!stored.desiredRunning || this.busy) return { recovered: false, message: "无需恢复" };
     const { runtime, stack, acceptance } = await this.getStatus();
-    const servicesHealthy = ["astrbot", "napcat"].every((id) => stack.services.find((service) => service.id === id)?.state === "ready");
-    const processesHealthy = runtime.stackState === "running";
-    const botConnected = acceptance.qqSession.state === "online" && acceptance.onebotConnected;
-    if (processesHealthy && servicesHealthy && botConnected) {
-      this.wasHealthy = true;
-      this.recoveryAttempted = false;
-      this.unhealthyChecks = 0;
+    const bridgeReady = runtime.services.find((item) => item.id === "napcat")?.running
+      && stack.services.find((item) => item.id === "napcat")?.state === "ready";
+    if (bridgeReady) {
+      await this.advanceQQStartup(stored).catch(() => undefined);
+      // Initial attach is startup work and must also work when automatic crash recovery is disabled.
+      try {
+        if (stored.autoConnectQQ && await this.snowlumaStatus.attachSelected(await this.getNapCatToken(), stored.autoLoginAccount)) {
+          this.unhealthyChecks = 0;
+          return { recovered: true, message: "SnowLuma 已接入选定的 QQ 账号" };
+        }
+      } catch { /* The actual API error remains visible in QQ session diagnostics. */ }
+    }
+    const servicesHealthy = acceptance.servicesReady && runtime.stackState === "running";
+    if (servicesHealthy && acceptance.qqSession.state === "online" && acceptance.onebotConnected) {
+      this.wasHealthy = true; this.recoveryAttempted = false; this.unhealthyChecks = 0;
       return { recovered: false, message: "运行正常" };
     }
-    if (!this.wasHealthy && processesHealthy && servicesHealthy) return { recovered: false, message: "等待 QQ 登录" };
-    if (this.recoveryAttempted) return { recovered: false, message: "自动恢复已尝试，等待人工处理" };
-
-    this.unhealthyChecks += 1;
-    const shouldRecoverImmediately = runtime.stackState === "partial" || runtime.stackState === "stopped";
-    if (!shouldRecoverImmediately && this.unhealthyChecks < 3) return { recovered: false, message: "正在确认掉线状态" };
-
-    this.busy = true;
-    this.recoveryAttempted = true;
-    try {
-      await this.stopServices();
-      const result = await this.startServices();
+    if (!stored.autoRecovery) return { recovered: false, message: "自动恢复已关闭" };
+    if (servicesHealthy && !stored.autoConnectQQ) {
       this.unhealthyChecks = 0;
-      this.wasHealthy = false;
-      return { recovered: result.ok, message: result.ok ? "检测到组件掉线，已自动重新启动" : result.message };
-    } catch (error) {
-      return { recovered: false, message: error instanceof Error ? error.message : "自动恢复失败" };
-    } finally {
-      this.busy = false;
+      return { recovered: false, message: "QQ 自动连接已关闭，可在 SnowLuma 中手动连接" };
     }
+    // A valid service with a logged-out QQ needs human authentication, not a process restart.
+    if (servicesHealthy && acceptance.qqSession.state !== "online") {
+      this.unhealthyChecks = 0;
+      return { recovered: false, message: acceptance.qqSession.detail };
+    }
+    if (this.recoveryAttempted) return { recovered: false, message: "自动恢复已尝试，等待状态恢复或人工处理" };
+    if (++this.unhealthyChecks < 3) return { recovered: false, message: "正在确认组件或连接异常" };
+    this.busy = true; this.recoveryAttempted = true;
+    try {
+      if (servicesHealthy) {
+        const account = stored.autoLoginAccount;
+        if (!account) return { recovered: false, message: "等待选择 QQ 账号" };
+        const config = await readJson<Record<string, unknown>>(path.join(this.snowlumaRoot, "config", `onebot_${account}.json`), {});
+        const { mode: _mode, ...body } = config;
+        await this.snowlumaStatus.api(await this.getNapCatToken(), `/api/config/${account}`, body);
+        return { recovered: true, message: "已重新应用所选账号的 OneBot 连接，QQ 保持运行" };
+      }
+      // Restart only unhealthy services. Never restart the official QQ client on session invalidation.
+      for (const service of runtime.services) {
+        if (service.running && stack.services.find((item) => item.id === service.id)?.state !== "ready") await this.stopService(service.id);
+      }
+      const result = await this.startServices();
+      return { recovered: result.ok, message: result.ok ? "已恢复异常组件，正在重新连接 QQ" : result.message };
+    } catch (error) { return { recovered: false, message: error instanceof Error ? error.message : "自动恢复失败" }; }
+    finally { this.unhealthyChecks = 0; this.busy = false; }
   }
 
   async getQQLoginAccounts(): Promise<NapCatQuickLoginAccount[]> {
-    const records = await this.processRecords();
-    const napcatRunning = await managedProcessRunning("napcat", records.napcat)
-      || (await this.managedNapCatQQProcesses()).length > 0;
-    if (!napcatRunning) {
-      throw new Error("NapCat 尚未运行，请先启动机器人后再刷新账号");
-    }
-    const napcatToken = await this.getNapCatToken();
-    try {
-      return await this.napcatStatus.getQuickLoginAccounts(napcatToken);
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : "NapCat 接口暂时不可用";
-      throw new Error(`无法读取 NapCat 快速登录账号：${detail}`);
-    }
+    return this.snowlumaStatus.getAccounts(await this.getNapCatToken());
   }
 
   async getCredentials() {
     const secrets = await this.ensureSecrets();
-    const [webUi, astrbotConfig] = await Promise.all([
-      readJson<{ token?: string }>(path.join(this.napcatRoot, "config", "webui.json"), {}),
-      readJson<Record<string, unknown>>(path.join(this.astrbotRoot, "data", "cmd_config.json"), {}),
-    ]);
+    const astrbotConfig = await readJson<Record<string, unknown>>(path.join(this.astrbotRoot, "data", "cmd_config.json"), {});
     const dashboard = astrbotConfig.dashboard && typeof astrbotConfig.dashboard === "object"
       ? astrbotConfig.dashboard as Record<string, unknown>
       : {};
@@ -2555,12 +2557,13 @@ export class NativeRuntimeManager {
       ...secrets,
       astrbotUsername: typeof dashboard.username === "string" && dashboard.username ? dashboard.username : secrets.astrbotUsername,
       astrbotCredentialState: getAstrBotCredentialState(astrbotConfig, secrets.astrbotUsername, secrets.astrbotPassword),
-      napcatToken: webUi.token ?? secrets.napcatToken,
+      napcatToken: secrets.snowlumaPassword!,
     };
   }
 
   async getLogs(service: NativeServiceId) {
-    const files = [path.join(this.logsRoot, `${service}.log`), path.join(this.logsRoot, `${service}.error.log`)];
+    const logName = service === "napcat" ? "snowluma" : service;
+    const files = [path.join(this.logsRoot, `${logName}.log`), path.join(this.logsRoot, `${logName}.error.log`)];
     const chunks: string[] = [];
     for (const file of files) {
       try {
@@ -2572,8 +2575,8 @@ export class NativeRuntimeManager {
     }
     if (chunks.length === 0) return "暂时没有日志。首次准备并启动后，日志会显示在这里。";
     const secrets = await this.getCredentials();
-    return [secrets.astrbotPassword, secrets.napcatToken]
-      .filter(Boolean)
+    return [secrets.astrbotPassword, secrets.napcatToken, secrets.snowlumaPassword]
+      .filter((secret): secret is string => Boolean(secret))
       .reduce((logs, secret) => logs.split(secret).join("[REDACTED]"), chunks.join("\n").trim());
   }
 }

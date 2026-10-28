@@ -100,6 +100,10 @@ export interface DesktopStatus {
 export interface DesktopPreferences {
   launchAtLogin: boolean;
   startBotAtLogin: boolean;
+  startBotOnLaunch: boolean;
+  autoLoginSnowLuma: boolean;
+  autoStartQQ: boolean;
+  autoConnectQQ: boolean;
   autoRecovery: boolean;
   autoLoginAccount: string | null;
 }
@@ -175,7 +179,7 @@ export interface DesktopAppUpdateResult {
   message: string;
 }
 
-export type DesktopAction = "install" | "install-qq" | "start" | "stop" | "restart" | "update" | "repair" | "rollback" | "reset-astrbot-credentials";
+export type DesktopAction = "install" | "install-qq" | "open-qq" | "start" | "stop" | "restart" | "update" | "repair" | "rollback" | "reset-astrbot-credentials";
 
 export type EmbeddedPanelId = "astrbot" | "napcat";
 

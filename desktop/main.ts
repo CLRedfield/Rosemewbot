@@ -40,6 +40,8 @@ import {
 } from "./app-update.js";
 import { buildFullUninstallPlan } from "./uninstall.js";
 import { syncWindowsLoginItem, type LoginItemSyncResult } from "./login-item.js";
+import { booleanPreferenceKeys, shouldStartBotOnLaunch } from "./startup-policy.js";
+import { SnowLumaPanelSession } from "./snowluma-panel-session.js";
 
 type PanelId = "astrbot" | "napcat";
 type PanelLoadState = "loading" | "ready" | "error";
@@ -69,6 +71,11 @@ const PANEL_LOAD_TIMEOUT_MS = 15_000;
 const panelViews = new Map<PanelId, WebContentsView>();
 const panelStates = new Map<PanelId, PanelState>();
 const panelLoadTimers = new Map<PanelId, NodeJS.Timeout>();
+const snowlumaPanelSession = new SnowLumaPanelSession({
+  origin: "http://127.0.0.1:5099",
+  enabled: async () => (await runtimeManager.getPreferences()).autoLoginSnowLuma,
+  token: () => runtimeManager.getSnowLumaSessionToken(),
+});
 let mainWindow: BrowserWindow | null = null;
 let activePanel: PanelId | null = null;
 let runtimeManager: NativeRuntimeManager;
@@ -173,7 +180,7 @@ async function requestFullUninstall() {
     type: "warning",
     title: "完全卸载 Rosemewbot",
     message: "确认完全卸载 Rosemewbot？",
-    detail: "此操作将停止机器人，并永久删除 Rosemewbot、AstrBot、NapCat、独立 Python、配置、凭据、缓存与日志。腾讯 QQ 本身不会被卸载。",
+    detail: "此操作将停止机器人，并永久删除 Rosemewbot、AstrBot、SnowLuma、独立 Python、配置、凭据、缓存与日志。腾讯 QQ 本身不会被卸载。",
     buttons: ["取消", "完全卸载"],
     defaultId: 0,
     cancelId: 0,
@@ -319,7 +326,10 @@ function startWatchdog() {
           new Notification({ title: "Rosemewbot 已恢复机器人", body: result.message }).show();
         }
         await refreshTray();
+        const panel = panelViews.get("napcat");
+        if (panel) await syncSnowLumaPanelSession(panel);
       })
+      .catch((error: unknown) => { console.error("Runtime watchdog failed:", error instanceof Error ? error.message : "unknown error"); })
       .finally(() => { watchdogRunning = false; });
   }, 15_000);
 }
@@ -340,7 +350,7 @@ async function migrateLegacyRuntime() {
 }
 
 function panelUrl(panel: PanelId) {
-  return panel === "astrbot" ? "http://127.0.0.1:6185" : "http://127.0.0.1:6099/webui";
+  return panel === "astrbot" ? "http://127.0.0.1:6185" : "http://127.0.0.1:5099";
 }
 
 function assertPanel(panel: PanelId) {
@@ -363,7 +373,7 @@ function clearPanelLoadTimer(panel: PanelId) {
 function beginPanelLoad(panel: PanelId, panelView: WebContentsView, message?: string) {
   clearPanelLoadTimer(panel);
   sendPanelState(panelMessage(panel, "loading", message));
-  const label = panel === "astrbot" ? "AstrBot" : "NapCat";
+  const label = panel === "astrbot" ? "AstrBot" : "SnowLuma";
   const timer = setTimeout(() => {
     panelLoadTimers.delete(panel);
     if (panelStates.get(panel)?.state !== "loading" || panelView.webContents.isDestroyed()) return;
@@ -395,7 +405,7 @@ function observePanelNavigation(panel: PanelId, panelView: WebContentsView, navi
     // did-fail-load normally provides the clearer Chromium error. This is a fallback
     // for failures that reject loadURL without a corresponding main-frame event.
     if (panelStates.get(panel)?.state !== "loading") return;
-    const detail = error instanceof Error ? error.message : `${panel === "astrbot" ? "AstrBot" : "NapCat"} 设置暂时无法访问`;
+    const detail = error instanceof Error ? error.message : `${panel === "astrbot" ? "AstrBot" : "SnowLuma"} 设置暂时无法访问`;
     failPanelLoad(panel, panelView, detail);
   });
 }
@@ -417,16 +427,11 @@ function normalizePanelBounds(bounds: PanelBounds) {
 }
 
 async function panelTarget(panel: PanelId) {
-  let target = panelUrl(panel);
-  if (panel === "napcat") {
-    const { napcatToken } = await runtimeManager.getCredentials();
-    if (napcatToken) target = `${target}?token=${encodeURIComponent(napcatToken)}`;
-  }
-  return target;
+  return panelUrl(panel);
 }
 
 function panelMessage(panel: PanelId, state: PanelLoadState, detail?: string): PanelState {
-  const label = panel === "astrbot" ? "AstrBot" : "NapCat";
+  const label = panel === "astrbot" ? "AstrBot" : "SnowLuma";
   const defaultMessage = state === "loading"
     ? `正在载入 ${label} 设置`
     : state === "ready"
@@ -478,7 +483,8 @@ function createPanelView(panel: PanelId) {
     if (!details.isMainFrame || details.isSameDocument) return;
     beginPanelLoad(panel, panelView);
   });
-  panelView.webContents.on("did-finish-load", () => {
+  panelView.webContents.on("did-finish-load", async () => {
+    if (panel === "napcat" && await syncSnowLumaPanelSession(panelView)) return;
     finishPanelLoad(panel, panelView);
   });
   panelView.webContents.on("did-fail-load", (_event, errorCode, errorDescription, _url, isMainFrame) => {
@@ -486,9 +492,13 @@ function createPanelView(panel: PanelId) {
     failPanelLoad(panel, panelView, `${errorDescription}（${errorCode}）`);
   });
   panelView.webContents.on("render-process-gone", () => {
-    failPanelLoad(panel, panelView, `${panel === "astrbot" ? "AstrBot" : "NapCat"} 设置页面意外退出`);
+    failPanelLoad(panel, panelView, `${panel === "astrbot" ? "AstrBot" : "SnowLuma"} 设置页面意外退出`);
   });
   return panelView;
+}
+
+async function syncSnowLumaPanelSession(panelView: WebContentsView) {
+  return snowlumaPanelSession.sync(panelView.webContents);
 }
 
 async function showEmbeddedPanel(panel: PanelId, bounds: PanelBounds) {
@@ -526,7 +536,7 @@ async function reloadEmbeddedPanel(panel: PanelId) {
   assertPanel(panel);
   const panelView = panelViews.get(panel);
   if (!panelView) return;
-  beginPanelLoad(panel, panelView, `正在重新载入 ${panel === "astrbot" ? "AstrBot" : "NapCat"} 设置`);
+  beginPanelLoad(panel, panelView, `正在重新载入 ${panel === "astrbot" ? "AstrBot" : "SnowLuma"} 设置`);
   if (panelView.webContents.getURL()) panelView.webContents.reloadIgnoringCache();
   else observePanelNavigation(panel, panelView, panelView.webContents.loadURL(await panelTarget(panel)));
 }
@@ -564,7 +574,7 @@ function trustedHandler<T extends unknown[], R>(handler: (...args: T) => Promise
 function registerIpc() {
   ipcMain.handle("desktop:get-config", trustedHandler(() => ({
     astrbotUrl: "http://127.0.0.1:6185",
-    napcatUrl: "http://127.0.0.1:6099/webui",
+    napcatUrl: "http://127.0.0.1:5099",
     onebotUrl: "ws://127.0.0.1:6199/ws",
     bindMode: "local" as const,
   })));
@@ -581,7 +591,7 @@ function registerIpc() {
     return { ok: true };
   }));
   ipcMain.handle("desktop:run-action", trustedHandler((action: NativeAction) => {
-    const allowed: NativeAction[] = ["install", "install-qq", "start", "stop", "restart", "update", "repair", "rollback", "reset-astrbot-credentials"];
+    const allowed: NativeAction[] = ["install", "install-qq", "open-qq", "start", "stop", "restart", "update", "repair", "rollback", "reset-astrbot-credentials"];
     if (!allowed.includes(action)) throw new Error("Unsupported action");
     return performRuntimeAction(action);
   }));
@@ -589,7 +599,7 @@ function registerIpc() {
   ipcMain.handle("desktop:get-qq-login-accounts", trustedHandler(() => runtimeManager.getQQLoginAccounts()));
   ipcMain.handle("desktop:set-preferences", trustedHandler(async (next: Partial<NativePreferences>) => {
     if (!next || typeof next !== "object" || Array.isArray(next)) throw new Error("Unsupported preferences");
-    const allowed = ["launchAtLogin", "startBotAtLogin", "autoRecovery", "autoLoginAccount"];
+    const allowed: string[] = [...booleanPreferenceKeys, "autoLoginAccount"];
     if (Object.keys(next).some((key) => !allowed.includes(key))) throw new Error("Unsupported preference key");
     for (const [key, value] of Object.entries(next)) {
       if (key === "autoLoginAccount") {
@@ -599,6 +609,8 @@ function registerIpc() {
       }
     }
     const preferences = await updatePreferences(next);
+    const panel = panelViews.get("napcat");
+    if (panel && typeof next.autoLoginSnowLuma === "boolean") await syncSnowLumaPanelSession(panel);
     await refreshTray();
     return preferences;
   }));
@@ -794,8 +806,22 @@ if (!gotLock) {
         body: "Windows 没有启用该启动项，应用已关闭开关；请在设置中重新开启。",
       }).show();
     }
-    if (!smokeTest && !captureUi) startWatchdog();
-    if (backgroundLaunch && preferences.startBotAtLogin) await performRuntimeAction("start");
+    const automaticStart = shouldStartBotOnLaunch(preferences, backgroundLaunch);
+    if (!smokeTest && !captureUi) {
+      await runtimeManager.prepareApplicationLaunch(automaticStart);
+      startWatchdog();
+    }
+    if (!smokeTest && !captureUi && automaticStart) {
+      // A startup failure should leave the console available for diagnosis and retry.
+      try {
+        const result = await performRuntimeAction("start");
+        if (!result.ok && Notification.isSupported()) {
+          new Notification({ title: "Rosemewbot 尚未自动启动", body: result.message }).show();
+        }
+      } catch (error) {
+        console.error("Automatic startup failed:", error instanceof Error ? error.message : "unknown error");
+      }
+    }
   }).catch((error) => {
     console.error(error);
     app.exit(1);
