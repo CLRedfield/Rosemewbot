@@ -309,6 +309,74 @@ describe("Windows native runtime configuration", () => {
     }
   });
 
+  it.each([404, 410])("does not skip the next fallback when a release returns HTTP %i", async (statusCode) => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "rosemewbot-download-"));
+    temporaryDirectories.push(directory);
+    const payload = Buffer.from("archived release");
+    const requests: string[] = [];
+    const server = createServer((request, response) => {
+      requests.push(request.url!);
+      response.writeHead(request.url === "/archive" ? 200 : statusCode);
+      response.end(request.url === "/archive" ? payload : "unavailable");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const sources = ["removed", "archive", "another"].map((name) => ({ name, url: `http://127.0.0.1:${port}/${name}` }));
+      await downloadFile(sources, path.join(directory, "release.zip"), () => undefined, {
+        sha256: createHash("sha256").update(payload).digest("hex"), maxAttempts: 2, retryDelaysMs: [0],
+      });
+      expect(requests).toEqual(["/removed", "/archive"]);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("rejects corrupt archives and removes the final partial download", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "rosemewbot-download-"));
+    temporaryDirectories.push(directory);
+    const server = createServer((_request, response) => response.end("not the pinned release"));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const target = path.join(directory, "release.zip");
+      await expect(downloadFile([{ name: "archive", url: `http://127.0.0.1:${port}/` }], target, () => undefined, {
+        sha256: createHash("sha256").update("expected release").digest("hex"), maxAttempts: 1,
+      })).rejects.toThrow("下载文件校验失败");
+      await expect(readFile(target)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(readFile(`${target}.part`)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("recovers from an interrupted response without keeping an open partial file", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "rosemewbot-download-"));
+    temporaryDirectories.push(directory);
+    const payload = Buffer.from("complete archived release");
+    const server = createServer((request, response) => {
+      response.writeHead(200, { "Content-Length": payload.length });
+      if (request.url === "/interrupted") {
+        response.write(payload.subarray(0, 3));
+        setTimeout(() => response.destroy(), 20);
+      } else response.end(payload);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const sources = ["interrupted", "complete"].map((name) => ({ name, url: `http://127.0.0.1:${port}/${name}` }));
+      const target = path.join(directory, "release.zip");
+      const result = await downloadFile(sources, target, () => undefined, {
+        sha256: createHash("sha256").update(payload).digest("hex"), maxAttempts: 2, retryDelaysMs: [0],
+      });
+      expect(result.source).toEqual(sources[1]);
+      await expect(readFile(target)).resolves.toEqual(payload);
+      await expect(readFile(`${target}.part`)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("restores component files from the last-good snapshot", async () => {
     const userDataDir = await mkdtemp(path.join(os.tmpdir(), "rosemewbot-compat-"));
     temporaryDirectories.push(userDataDir);

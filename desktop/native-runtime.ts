@@ -267,9 +267,9 @@ export const COMPONENT_POLICY = componentLock as {
   qq: { minimumBuild: number; testedBuild: number; downloadUrl: string };
 };
 const githubHeaders = {
-  Accept: "application/vnd.github+json",
-  "User-Agent": "Rosemewbot-Native/0.6.3",
-  "X-GitHub-Api-Version": "2022-11-28",
+  Accept: "application/octet-stream",
+  "Accept-Encoding": "identity",
+  "User-Agent": "Rosemewbot-Native",
 };
 const managedNapCatConnectionName = "Rosemewbot · AstrBot";
 const legacyNapCatConnectionName = "Agent Space · AstrBot";
@@ -840,8 +840,13 @@ function downloadOnce(
       settled = true;
       clearTimeout(totalTimer);
       if (error) {
-        output?.destroy();
-        reject(error);
+        // Windows cannot remove/retry a partial file until its writer closes.
+        if (output && !output.closed) {
+          output.once("close", () => reject(error));
+          output.destroy();
+        } else {
+          reject(error);
+        }
       } else {
         resolve();
       }
@@ -888,7 +893,7 @@ export async function downloadFile(
   onProgress: (downloaded: number, total: number | null, context: DownloadProgressContext) => void,
   options: DownloadFileOptions = {},
 ): Promise<DownloadFileResult> {
-  let candidates = uniqueDownloadSources(sources);
+  const candidates = uniqueDownloadSources(sources);
   if (candidates.length === 0) throw new Error("没有配置可用的下载地址");
 
   const reuseVerifiedTarget = options.reuseVerifiedTarget ?? Boolean(options.sha256);
@@ -901,20 +906,19 @@ export async function downloadFile(
     }
   }
 
-  const maxAttempts = Math.max(1, options.maxAttempts ?? 3);
+  const maxAttempts = Math.max(1, options.maxAttempts ?? Math.max(3, candidates.length));
   const inactivityTimeoutMs = Math.max(1_000, options.inactivityTimeoutMs ?? 60_000);
   const totalTimeoutMs = Math.max(inactivityTimeoutMs, options.totalTimeoutMs ?? 15 * 60_000);
   const retryDelaysMs = options.retryDelaysMs ?? [1_000, 3_000, 8_000];
   const partial = `${target}.part`;
-  let lastError: DownloadRequestError | null = null;
-  let lastSource: DownloadSource | null = null;
+  const failures = new Map<string, string>();
   let attemptsMade = 0;
 
   for (let attempt = 1; attempt <= maxAttempts && candidates.length > 0; attempt += 1) {
-    const source = candidates[(attempt - 1) % candidates.length];
+    // A queue tries every fallback in order, even when a 404 removes a source.
+    const source = candidates.shift()!;
     const context = { attempt, maxAttempts, source };
     attemptsMade = attempt;
-    lastSource = source;
     await rm(partial, { force: true });
     onProgress(0, null, context);
 
@@ -925,18 +929,24 @@ export async function downloadFile(
       await rename(partial, target);
       return { cached: false, source };
     } catch (error) {
-      lastError = normalizeDownloadError(error);
-      if (!lastError.retryable) candidates = candidates.filter((candidate) => candidate.url !== source.url);
+      const failure = normalizeDownloadError(error);
+      const detail = failure.statusCode === 404 || failure.statusCode === 410
+        ? `${failure.message}，该发布文件已不可用`
+        : failure.message;
+      failures.set(source.url, `${source.name}（${new URL(source.url).hostname}）：${detail}`);
+      await rm(partial, { force: true });
+      if (failure.retryable) candidates.push(source);
       if (attempt >= maxAttempts || candidates.length === 0) break;
-      const requestedDelay = lastError.retryAfterMs || retryDelaysMs[Math.min(attempt - 1, retryDelaysMs.length - 1)] || 0;
+      const requestedDelay = failure.retryable
+        ? failure.retryAfterMs || retryDelaysMs[Math.min(attempt - 1, retryDelaysMs.length - 1)] || 0
+        : 0;
       const baseDelay = Math.min(30_000, requestedDelay);
       const jitter = baseDelay > 0 ? Math.floor(Math.random() * Math.min(250, baseDelay * 0.2)) : 0;
       await new Promise((resolveDelay) => setTimeout(resolveDelay, baseDelay + jitter));
     }
   }
 
-  const sourceLabel = lastSource ? `${lastSource.name}（${new URL(lastSource.url).hostname}）` : "下载源";
-  throw new Error(`下载失败（已尝试 ${attemptsMade} 次）：${sourceLabel}：${lastError?.message ?? "未知错误"}`);
+  throw new Error(`下载失败（已尝试 ${attemptsMade} 次）：${[...failures.values()].join("；")}`);
 }
 
 async function managedProcessRunning(service: NativeServiceId, pid?: number) {
@@ -1613,11 +1623,21 @@ export class NativeRuntimeManager {
   private async downloadSnowLumaArchive() {
     const policy = COMPONENT_POLICY.snowluma;
     const archive = path.join(this.downloadsRoot, policy.asset);
-    if (!await hasVerifiedDigest(archive, policy.sha256)) {
-      await downloadFile(fallbackDownloadSources(policy), archive, (downloaded, total) => {
-        this.setProgress({ stage: "downloading", component: "napcat", percent: 80,
-          detail: `下载 SnowLuma ${formatMegabytes(downloaded)}${total ? " / " + formatMegabytes(total) : ""}` });
+    if (await hasVerifiedDigest(archive, policy.sha256)) {
+      this.setProgress({ stage: "checking", component: "napcat", percent: 83,
+        detail: `SnowLuma ${policy.version} 已通过校验，直接复用本地缓存` });
+      return archive;
+    }
+    const sources = await this.prioritizeDownloadSources("SnowLuma", fallbackDownloadSources(policy), "napcat", 76);
+    try {
+      await downloadFile(sources, archive, (downloaded, total, context) => {
+        const fraction = total ? downloaded / total : 0;
+        this.setProgress({ stage: "downloading", component: "napcat", percent: Math.min(83, 76 + Math.round(fraction * 7)),
+          detail: `下载 SnowLuma ${policy.version} ${formatMegabytes(downloaded)}${total ? " / " + formatMegabytes(total) : ""} · ${context.source.name} · 第 ${context.attempt}/${context.maxAttempts} 次` });
       }, { sha256: policy.sha256 });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "未知下载错误";
+      throw new Error(`SnowLuma ${reason}。请确认能访问 GitHub 发布附件后重试；若所有来源均提示发布文件不可用，请检查 Rosemewbot 新版本。`);
     }
     return archive;
   }

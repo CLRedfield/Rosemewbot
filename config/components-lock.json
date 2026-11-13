@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "policyVersion": "2026.10.21-snowluma.1",
+  "policyVersion": "2026.11.13-snowluma.2",
   "channel": "stable",
-  "testedAt": "2026-10-21",
+  "testedAt": "2026-11-13",
   "python": {
     "version": "3.12",
     "installSources": [
@@ -67,13 +67,17 @@
   },
   "snowluma": {
     "repository": "SnowLuma/SnowLuma",
-    "version": "v2.1.0",
-    "asset": "SnowLuma-v2.1.0-win-x64.zip",
-    "sha256": "aa67ac2656a5f7ffcd6135ccf31886ef1538aca00565f2ca917de146e3699268",
+    "version": "v2.4.2",
+    "asset": "SnowLuma-v2.4.2-win-x64.zip",
+    "sha256": "0912926c5e73260f35b000278a8658493fc9452f36782c32fa86f0e825bad81a",
     "downloadSources": [
       {
+        "name": "XingYunStar 历史归档",
+        "url": "https://github.com/XingYunStar/snowluma/releases/download/v2.4.2/SnowLuma-v2.4.2-win-x64.zip"
+      },
+      {
         "name": "GitHub 官方",
-        "url": "https://github.com/SnowLuma/SnowLuma/releases/download/v2.1.0/SnowLuma-v2.1.0-win-x64.zip"
+        "url": "https://github.com/SnowLuma/SnowLuma/releases/download/v2.4.2/SnowLuma-v2.4.2-win-x64.zip"
       }
     ]
   }

@@ -6,12 +6,12 @@ SnowLuma 接入由腾讯官方 Windows QQ 管理的登录会话。首次登录�
 
 ## Windows 安装版
 
-当前版本：**0.6.6**。下载 [Windows x64 安装包](https://github.com/CLRedfield/Rosemewbot/releases/tag/v0.6.6)，查看[版本更新说明与升级步骤](docs/releases/v0.6.6.md)。
+当前版本：**0.6.7**。下载 [Windows x64 安装包](https://github.com/CLRedfield/Rosemewbot/releases/tag/v0.6.7)，查看[版本更新说明与升级步骤](docs/releases/v0.6.7.md)。
 
 构建产物：
 
 ```text
-release/Rosemewbot-Setup-0.6.6-x64.exe
+release/Rosemewbot-Setup-0.6.7-x64.exe
 ```
 
 用户流程只有三步：
@@ -23,6 +23,8 @@ release/Rosemewbot-Setup-0.6.6-x64.exe
 不需要 Docker Desktop，不需要用户安装 Python、Node.js，也不需要打开 PowerShell。
 
 下载应用安装包、首次准备、更新或修复组件时，需要能连接 GitHub（通常需要 VPN）。开始下载前请确认 GitHub 可以正常访问，并在下载完成前保持连接。
+
+SnowLuma 原官方仓库及下载地址目前已不可公开访问。v0.6.7 使用 [XingYunStar 历史归档](https://github.com/XingYunStar/snowluma/releases/tag/v2.4.2)中的 v2.4.2 Windows x64 完整包，固定 SHA-256 校验；下载前检查来源，失败时自动切换，已校验缓存可离线复用。归档由第三方保存，不代表上游恢复维护。旧版准备失败的用户请先更新 Rosemewbot，再重新点击“一键完成首次准备”；已安装组件的用户点击“更新组件”。
 
 默认安装位置：
 
@@ -97,7 +99,7 @@ npm run desktop:dir
 - 主窗口启用渲染沙箱、上下文隔离，并禁用 Node Integration。
 - 前端只能调用预加载脚本中的固定白名单操作；主进程再次校验来源和参数。
 - AstrBot、SnowLuma 和 OneBot 端口仅绑定到 `127.0.0.1`。
-- 组件下载来自官方发布源；带摘要的 GitHub 资源会校验 SHA-256。
+- 组件使用固定发布源；SnowLuma 使用明确标注的第三方历史归档，SnowLuma 与 uv 下载均校验锁定的 SHA-256。
 - 自动下载的 QQ 安装程序必须通过 Windows Authenticode 验证，且签名者必须为 Tencent。
 - 日志返回界面前会移除本机密码与 Token。
 - 停止组件前核对进程身份，卸载所选账号的 SnowLuma 接入并保留官方 QQ；迁移清理旧 NapCat 时只匹配本应用私有目录中的 Hook DLL。
