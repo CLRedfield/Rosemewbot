@@ -62,7 +62,7 @@ import type {
 import { copyTextToClipboard } from "./clipboard";
 import { createFirstSetupPlan, getQQSessionPresentation, getRuntimeProgressHeadline, getRuntimeServicePresentation } from "./runtime-logic";
 
-const githubDownloadNotice = "下载需要能连接 GitHub（通常需要 VPN），请先确认 GitHub 可以正常访问。";
+const githubDownloadNotice = "下载需要能访问 GitHub 发布附件。使用代理时请开启 Windows 系统代理；组件主下载源不可用时会自动切换备用源。";
 
 const fallbackConfig: PublicConfig = {
   astrbotUrl: "http://localhost:6185",

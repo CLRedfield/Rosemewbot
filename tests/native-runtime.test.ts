@@ -377,6 +377,82 @@ describe("Windows native runtime configuration", () => {
     }
   });
 
+  it("uses the supplied network transport for both source checks and file downloads", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "rosemewbot-download-"));
+    temporaryDirectories.push(directory);
+    const payload = Buffer.from("archive fetched through the desktop proxy");
+    const source = { name: "proxy-only archive", url: "https://unreachable.invalid/archive.zip" };
+    const calls: RequestInit[] = [];
+    const fetcher = async (url: string, init?: RequestInit) => {
+      expect(url).toBe(source.url);
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      calls.push(init!);
+      return new Response(payload, { status: new Headers(init?.headers).has("Range") ? 206 : 200,
+        headers: { "Content-Length": String(payload.length) } });
+    };
+    expect((await probeDownloadSources([source], 1_000, fetcher))[0].ok).toBe(true);
+    const target = path.join(directory, "archive.zip");
+    await downloadFile([source], target, () => undefined, {
+      fetcher, sha256: createHash("sha256").update(payload).digest("hex"),
+    });
+    expect(calls).toHaveLength(2);
+    await expect(readFile(target)).resolves.toEqual(payload);
+  });
+
+  it.each(["headers", "body"])("automatically switches sources when %s stop arriving", async (stage) => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "rosemewbot-download-"));
+    temporaryDirectories.push(directory);
+    const payload = Buffer.from("complete fallback archive");
+    const requests: string[] = [];
+    const server = createServer((request, response) => {
+      requests.push(request.url!);
+      if (request.url === "/stalled") {
+        if (stage === "body") {
+          response.writeHead(200, { "Content-Length": payload.length });
+          response.write(payload.subarray(0, 3));
+        }
+      } else response.end(payload);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const sources = ["stalled", "fallback"].map((name) => ({ name, url: `http://127.0.0.1:${port}/${name}` }));
+      const target = path.join(directory, "archive.zip");
+      const attempts: string[] = [];
+      const result = await downloadFile(sources, target, (downloaded, _total, context) => {
+        if (downloaded === 0) attempts.push(context.source.name);
+      }, { inactivityTimeoutMs: 1_000, totalTimeoutMs: 4_000, maxAttempts: 2,
+        sha256: createHash("sha256").update(payload).digest("hex") });
+      expect(result.source).toEqual(sources[1]);
+      expect(requests).toEqual(["/stalled", "/fallback"]);
+      expect(attempts).toEqual(["stalled", "fallback"]);
+      await expect(readFile(target)).resolves.toEqual(payload);
+      await expect(readFile(`${target}.part`)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("does not make a healthy fallback wait for another source's Retry-After", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "rosemewbot-download-"));
+    temporaryDirectories.push(directory);
+    const payload = Buffer.from("fallback archive");
+    const requests: string[] = [];
+    const fetcher = async (url: string) => {
+      requests.push(url);
+      return url.endsWith("/limited")
+        ? new Response("rate limited", { status: 429, headers: { "Retry-After": "30" } })
+        : new Response(payload);
+    };
+    const sources = ["limited", "fallback"].map((name) => ({ name, url: `https://example.invalid/${name}` }));
+    const result = await downloadFile(sources, path.join(directory, "archive.zip"), () => undefined, {
+      fetcher, maxAttempts: 2, sha256: createHash("sha256").update(payload).digest("hex"),
+    });
+    expect(result.source).toEqual(sources[1]);
+    expect(requests).toEqual(sources.map((source) => source.url));
+  }, 2_000);
+
   it("restores component files from the last-good snapshot", async () => {
     const userDataDir = await mkdtemp(path.join(os.tmpdir(), "rosemewbot-compat-"));
     temporaryDirectories.push(userDataDir);

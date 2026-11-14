@@ -13,9 +13,8 @@ import {
   statfs,
   writeFile,
 } from "node:fs/promises";
-import http from "node:http";
-import https from "node:https";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
@@ -165,9 +164,13 @@ export interface DownloadProgressContext {
   attempt: number;
   maxAttempts: number;
   source: DownloadSource;
+  previousSource?: DownloadSource;
 }
 
+export type DownloadFetch = (url: string, init?: RequestInit) => Promise<Response>;
+
 export interface DownloadFileOptions {
+  fetcher?: DownloadFetch;
   sha256?: string;
   reuseVerifiedTarget?: boolean;
   maxAttempts?: number;
@@ -721,170 +724,96 @@ function fallbackDownloadSources(component: { repository: string; version: strin
     : [{ name: "GitHub 官方", url: buildGitHubReleaseDownloadUrl(component.repository, component.version, component.asset) }];
 }
 
-async function probeDownloadSource(source: DownloadSource, timeoutMs: number): Promise<DownloadSourceHealth> {
+async function probeDownloadSource(source: DownloadSource, timeoutMs: number, fetcher: DownloadFetch): Promise<DownloadSourceHealth> {
   const startedAt = Date.now();
-  const deadline = startedAt + timeoutMs;
-
-  const probe = (url: string, redirectCount = 0): Promise<{ statusCode: number; finalUrl: string }> => new Promise((resolve, reject) => {
-    if (redirectCount > 8) {
-      reject(new DownloadRequestError("重定向次数过多", false));
-      return;
-    }
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) {
-      reject(new DownloadRequestError("连接检查超时"));
-      return;
-    }
-
-    const transport = url.startsWith("https:") ? https : http;
-    let settled = false;
-    const request = transport.get(url, {
-      headers: {
-        ...githubHeaders,
-        Range: "bytes=0-0",
-        "Accept-Encoding": "identity",
-      },
-    }, (response) => {
-      const statusCode = response.statusCode ?? 0;
-      if (statusCode >= 300 && statusCode < 400 && response.headers.location) {
-        settled = true;
-        clearTimeout(totalTimer);
-        response.resume();
-        const nextUrl = new URL(response.headers.location, url).toString();
-        void probe(nextUrl, redirectCount + 1).then(resolve, reject);
-        return;
-      }
-      if (statusCode !== 200 && statusCode !== 206) {
-        settled = true;
-        clearTimeout(totalTimer);
-        response.resume();
-        reject(new DownloadRequestError(`HTTP ${statusCode || "unknown"}`, false, 0, statusCode || null));
-        return;
-      }
-
-      const succeed = () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(totalTimer);
-        response.destroy();
-        resolve({ statusCode, finalUrl: url });
-      };
-      response.once("data", succeed);
-      response.once("end", succeed);
-      response.once("error", (error) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(totalTimer);
-        reject(error);
-      });
-    });
-    const totalTimer = setTimeout(() => request.destroy(new DownloadRequestError("连接检查超时")), remaining);
-    request.once("error", (error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(totalTimer);
-      reject(error);
-    });
-  });
-
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new DownloadRequestError("连接检查超时")), timeoutMs);
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   try {
-    const result = await probe(source.url);
-    return {
-      ...source,
-      ok: true,
-      latencyMs: Date.now() - startedAt,
-      statusCode: result.statusCode,
-      finalUrl: result.finalUrl,
-      error: null,
-    };
+    const response = await fetcher(source.url, {
+      headers: { ...githubHeaders, Range: "bytes=0-0" },
+      signal: controller.signal, redirect: "follow", credentials: "omit", cache: "no-store",
+    });
+    if (response.status !== 200 && response.status !== 206) {
+      throw new DownloadRequestError(`HTTP ${response.status}`, false, 0, response.status);
+    }
+    reader = response.body?.getReader();
+    const first = await reader?.read();
+    if (!first?.value?.length) throw new DownloadRequestError("下载源返回空内容");
+    return { ...source, ok: true, latencyMs: Date.now() - startedAt, statusCode: response.status,
+      finalUrl: response.url || source.url, error: null };
   } catch (error) {
-    const normalized = normalizeDownloadError(error);
-    return {
-      ...source,
-      ok: false,
-      latencyMs: Date.now() - startedAt,
-      statusCode: normalized.statusCode,
-      finalUrl: null,
-      error: normalized.message,
-    };
+    const failure = normalizeDownloadError(controller.signal.aborted ? controller.signal.reason : error);
+    return { ...source, ok: false, latencyMs: Date.now() - startedAt, statusCode: failure.statusCode,
+      finalUrl: null, error: failure.message };
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
+    await reader?.cancel().catch(() => undefined);
+    reader?.releaseLock();
   }
 }
 
-export async function probeDownloadSources(sources: DownloadSource[], timeoutMs = 8_000) {
-  return await Promise.all(uniqueDownloadSources(sources).map((source) => probeDownloadSource(source, timeoutMs)));
+export async function probeDownloadSources(sources: DownloadSource[], timeoutMs = 8_000, fetcher: DownloadFetch = fetch) {
+  return await Promise.all(uniqueDownloadSources(sources).map((source) => probeDownloadSource(source, timeoutMs, fetcher)));
 }
 
-function downloadOnce(
+async function downloadOnce(
   url: string,
   target: string,
   onProgress: (downloaded: number, total: number | null) => void,
   inactivityTimeoutMs: number,
-  deadline: number,
-  redirectCount = 0,
+  totalTimeoutMs: number,
+  fetcher: DownloadFetch,
 ): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (redirectCount > 8) {
-      reject(new DownloadRequestError("下载重定向次数过多", false));
-      return;
+  const controller = new AbortController();
+  let idleTimer: ReturnType<typeof setTimeout>;
+  const resetIdleTimer = () => {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => controller.abort(new DownloadRequestError("下载连接长时间没有收到数据")), inactivityTimeoutMs);
+  };
+  const totalTimer = setTimeout(() => controller.abort(new DownloadRequestError("下载总耗时超过限制")), totalTimeoutMs);
+  resetIdleTimer();
+  try {
+    const response = await fetcher(url, {
+      headers: githubHeaders, signal: controller.signal, redirect: "follow", credentials: "omit", cache: "no-store",
+    });
+    if (response.status !== 200) {
+      await response.body?.cancel();
+      throw new DownloadRequestError(`HTTP ${response.status}`,
+        response.status === 408 || response.status === 429 || response.status >= 500,
+        retryAfterMilliseconds(response.headers.get("retry-after") ?? undefined), response.status);
     }
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) {
-      reject(new DownloadRequestError("下载总耗时超过限制"));
-      return;
-    }
-    const transport = url.startsWith("https:") ? https : http;
-    let settled = false;
-    let output: ReturnType<typeof createWriteStream> | null = null;
-    const finish = (error?: unknown) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(totalTimer);
-      if (error) {
-        // Windows cannot remove/retry a partial file until its writer closes.
-        if (output && !output.closed) {
-          output.once("close", () => reject(error));
-          output.destroy();
-        } else {
-          reject(error);
+    if (!response.body) throw new DownloadRequestError("下载源返回空内容");
+    const contentLength = Number(response.headers.get("content-length"));
+    const total = Number.isSafeInteger(contentLength) && contentLength > 0 ? contentLength : null;
+    let downloaded = 0;
+    const reader = response.body.getReader();
+    const chunks = async function* () {
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          resetIdleTimer();
+          downloaded += value.length;
+          onProgress(downloaded, total);
+          yield value;
         }
-      } else {
-        resolve();
+      } finally {
+        await reader.cancel().catch(() => undefined);
+        reader.releaseLock();
       }
     };
-    const request = transport.get(url, { headers: githubHeaders }, (response) => {
-      if (response.statusCode && response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
-        settled = true;
-        clearTimeout(totalTimer);
-        response.resume();
-        const nextUrl = new URL(response.headers.location, url).toString();
-        void downloadOnce(nextUrl, target, onProgress, inactivityTimeoutMs, deadline, redirectCount + 1).then(resolve, reject);
-        return;
-      }
-      if (response.statusCode !== 200) {
-        response.resume();
-        const statusCode = response.statusCode ?? 0;
-        const retryable = statusCode === 408 || statusCode === 429 || statusCode >= 500;
-        finish(new DownloadRequestError(
-          `HTTP ${statusCode || "unknown"}`,
-          retryable,
-          retryAfterMilliseconds(response.headers["retry-after"]),
-          statusCode || null,
-        ));
-        return;
-      }
-      const total = response.headers["content-length"] ? Number(response.headers["content-length"]) : null;
-      let downloaded = 0;
-      output = createWriteStream(target, { flags: "w" });
-      response.on("data", (chunk: Buffer) => {
-        downloaded += chunk.length;
-        onProgress(downloaded, total);
-      });
-      void pipeline(response, output).then(() => finish(), finish);
-    });
-    const totalTimer = setTimeout(() => request.destroy(new DownloadRequestError("下载总耗时超过限制")), remaining);
-    request.setTimeout(inactivityTimeoutMs, () => request.destroy(new DownloadRequestError("下载连接长时间没有收到数据")));
-    request.once("error", finish);
-  });
+    // pipeline closes the writer before retry/removal, including on Windows.
+    await pipeline(Readable.from(chunks()), createWriteStream(target, { flags: "w" }), { signal: controller.signal });
+    if (total !== null && downloaded !== total) throw new DownloadRequestError("下载文件长度不完整");
+  } catch (error) {
+    throw controller.signal.aborted ? controller.signal.reason : error;
+  } finally {
+    clearTimeout(idleTimer!);
+    clearTimeout(totalTimer);
+    controller.abort();
+  }
 }
 
 export async function downloadFile(
@@ -907,23 +836,27 @@ export async function downloadFile(
   }
 
   const maxAttempts = Math.max(1, options.maxAttempts ?? Math.max(3, candidates.length));
-  const inactivityTimeoutMs = Math.max(1_000, options.inactivityTimeoutMs ?? 60_000);
+  const inactivityTimeoutMs = Math.max(1_000, options.inactivityTimeoutMs ?? 15_000);
   const totalTimeoutMs = Math.max(inactivityTimeoutMs, options.totalTimeoutMs ?? 15 * 60_000);
   const retryDelaysMs = options.retryDelaysMs ?? [1_000, 3_000, 8_000];
   const partial = `${target}.part`;
   const failures = new Map<string, string>();
+  const retryAt = new Map<string, number>();
+  let previousSource: DownloadSource | undefined;
   let attemptsMade = 0;
 
   for (let attempt = 1; attempt <= maxAttempts && candidates.length > 0; attempt += 1) {
     // A queue tries every fallback in order, even when a 404 removes a source.
     const source = candidates.shift()!;
-    const context = { attempt, maxAttempts, source };
+    const delay = Math.max(0, (retryAt.get(source.url) ?? 0) - Date.now());
+    if (delay > 0) await new Promise((resolveDelay) => setTimeout(resolveDelay, delay));
+    const context = { attempt, maxAttempts, source, previousSource };
     attemptsMade = attempt;
     await rm(partial, { force: true });
     onProgress(0, null, context);
 
     try {
-      await downloadOnce(source.url, partial, (downloaded, total) => onProgress(downloaded, total, context), inactivityTimeoutMs, Date.now() + totalTimeoutMs);
+      await downloadOnce(source.url, partial, (downloaded, total) => onProgress(downloaded, total, context), inactivityTimeoutMs, totalTimeoutMs, options.fetcher ?? fetch);
       if (options.sha256) await verifyDigest(partial, `sha256:${options.sha256.replace(/^sha256:/i, "")}`);
       await rm(target, { force: true });
       await rename(partial, target);
@@ -934,6 +867,7 @@ export async function downloadFile(
         ? `${failure.message}，该发布文件已不可用`
         : failure.message;
       failures.set(source.url, `${source.name}（${new URL(source.url).hostname}）：${detail}`);
+      previousSource = source;
       await rm(partial, { force: true });
       if (failure.retryable) candidates.push(source);
       if (attempt >= maxAttempts || candidates.length === 0) break;
@@ -942,7 +876,8 @@ export async function downloadFile(
         : 0;
       const baseDelay = Math.min(30_000, requestedDelay);
       const jitter = baseDelay > 0 ? Math.floor(Math.random() * Math.min(250, baseDelay * 0.2)) : 0;
-      await new Promise((resolveDelay) => setTimeout(resolveDelay, baseDelay + jitter));
+      // Backoff belongs to this failed source; never delay a fresh fallback.
+      retryAt.set(source.url, Date.now() + baseDelay + jitter);
     }
   }
 
@@ -1013,7 +948,8 @@ export class NativeRuntimeManager {
   private qqLaunchPending = false;
   private napcatQQProcessCache: { checkedAt: number; pids: number[] } = { checkedAt: 0, pids: [] };
 
-  constructor(userDataDir: string, onProgress: (progress: InstallProgress) => void = () => undefined) {
+  constructor(userDataDir: string, onProgress: (progress: InstallProgress) => void = () => undefined,
+    private readonly downloadFetch: DownloadFetch = fetch) {
     this.runtimeDir = path.join(userDataDir, "native-runtime");
     this.astrbotRoot = path.join(this.runtimeDir, "astrbot");
     this.snowlumaRoot = path.join(this.runtimeDir, "snowluma");
@@ -1377,17 +1313,19 @@ export class NativeRuntimeManager {
     percent: number,
   ) {
     this.setProgress({ stage: "checking", component, percent, detail: `正在检查${label}下载源` });
-    const health = await probeDownloadSources(sources);
+    const health = await probeDownloadSources(sources, 5_000, this.downloadFetch);
     const measurements = new Map(health.map((item) => [item.url, item]));
     const ordered = orderDownloadSourcesByHealth(sources, health);
     const selected = ordered.find((source) => measurements.get(source.url)?.ok);
     const selectedHealth = selected ? measurements.get(selected.url) : null;
+    const usingFallback = selected && sources[0] && selected.url !== sources[0].url && !measurements.get(sources[0].url)?.ok;
     this.setProgress({
       stage: "checking",
       component,
       percent,
       detail: selected
-        ? `${label}已选择较快下载源：${selected.name}${selectedHealth ? ` · ${selectedHealth.latencyMs} ms` : ""}`
+        ? usingFallback ? `${label}主下载源不可用，已自动切换至${selected.name}`
+          : `${label}已选择较快下载源：${selected.name}${selectedHealth ? ` · ${selectedHealth.latencyMs} ms` : ""}`
         : `${label}下载源预检失败，将在下载时继续重试`,
     });
     return ordered;
@@ -1414,7 +1352,7 @@ export class NativeRuntimeManager {
         percent: Math.min(15, 5 + Math.round(fraction * 10)),
         detail: `准备运行工具 ${formatMegabytes(downloaded)}${total ? ` / ${formatMegabytes(total)}` : ""} · ${context.source.name} · 第 ${context.attempt}/${context.maxAttempts} 次`,
       });
-    }, { sha256: COMPONENT_POLICY.uv.sha256 });
+    }, { sha256: COMPONENT_POLICY.uv.sha256, fetcher: this.downloadFetch });
     if (download.cached) {
       this.setProgress({ stage: "checking", component: "astrbot", percent: 15, detail: "Python 运行工具已通过校验，直接复用本地缓存" });
     }
@@ -1553,7 +1491,7 @@ export class NativeRuntimeManager {
     const sourceHealth = await probeDownloadSources(configuredSources.map((source) => ({
       name: source.name,
       url: `${source.indexUrl.replace(/\/$/, "")}/${COMPONENT_POLICY.astrbot.package}/`,
-    })));
+    })), 5_000, this.downloadFetch);
     const measurements = new Map(sourceHealth.map((item) => [item.name, item]));
     const installSources = [...configuredSources].sort((left, right) => {
       const leftHealth = measurements.get(left.name);
@@ -1632,12 +1570,14 @@ export class NativeRuntimeManager {
     try {
       await downloadFile(sources, archive, (downloaded, total, context) => {
         const fraction = total ? downloaded / total : 0;
+        const switching = downloaded === 0 && context.previousSource && context.previousSource.url !== context.source.url;
         this.setProgress({ stage: "downloading", component: "napcat", percent: Math.min(83, 76 + Math.round(fraction * 7)),
-          detail: `下载 SnowLuma ${policy.version} ${formatMegabytes(downloaded)}${total ? " / " + formatMegabytes(total) : ""} · ${context.source.name} · 第 ${context.attempt}/${context.maxAttempts} 次` });
-      }, { sha256: policy.sha256 });
+          detail: switching ? `${context.previousSource!.name}下载失败，正在自动切换至${context.source.name}`
+            : `下载 SnowLuma ${policy.version} ${formatMegabytes(downloaded)}${total ? " / " + formatMegabytes(total) : ""} · ${context.source.name} · 第 ${context.attempt}/${context.maxAttempts} 次` });
+      }, { sha256: policy.sha256, fetcher: this.downloadFetch });
     } catch (error) {
       const reason = error instanceof Error ? error.message : "未知下载错误";
-      throw new Error(`SnowLuma ${reason}。请确认能访问 GitHub 发布附件后重试；若所有来源均提示发布文件不可用，请检查 Rosemewbot 新版本。`);
+      throw new Error(`SnowLuma ${reason}。请确认 Windows 系统代理或网络能访问 GitHub 发布附件后重试；若所有来源均提示发布文件不可用，请检查 Rosemewbot 新版本。`);
     }
     return archive;
   }
@@ -1750,7 +1690,7 @@ export class NativeRuntimeManager {
           percent: Math.min(72, 2 + Math.round(fraction * 70)),
           detail: `下载 Windows QQ ${formatMegabytes(downloaded)}${total ? ` / ${formatMegabytes(total)}` : ""} · ${context.source.name} · 第 ${context.attempt}/${context.maxAttempts} 次`,
         });
-      });
+      }, { fetcher: this.downloadFetch });
       await this.verifyQQInstaller(installer);
     } catch (error) {
       return { ok: false, code: "QQ_DOWNLOAD_FAILED", message: error instanceof Error ? error.message : "QQ 下载失败" };

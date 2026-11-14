@@ -788,7 +788,8 @@ if (!gotLock) {
     nativeTheme.themeSource = "system";
     session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
     await migrateLegacyRuntime();
-    runtimeManager = new NativeRuntimeManager(app.getPath("userData"), sendRuntimeProgress);
+    runtimeManager = new NativeRuntimeManager(app.getPath("userData"), sendRuntimeProgress,
+      (url, options) => net.fetch(url, options));
     await runtimeManager.initialize();
     let preferences = await runtimeManager.getPreferences();
     const loginItem = syncLoginItemSettings(preferences);

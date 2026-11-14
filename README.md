@@ -6,12 +6,12 @@ SnowLuma 接入由腾讯官方 Windows QQ 管理的登录会话。首次登录�
 
 ## Windows 安装版
 
-当前版本：**0.6.7**。下载 [Windows x64 安装包](https://github.com/CLRedfield/Rosemewbot/releases/tag/v0.6.7)，查看[版本更新说明与升级步骤](docs/releases/v0.6.7.md)。
+当前版本：**0.6.8**。下载 [Windows x64 安装包](https://github.com/CLRedfield/Rosemewbot/releases/tag/v0.6.8)，查看[版本更新说明与升级步骤](docs/releases/v0.6.8.md)。
 
 构建产物：
 
 ```text
-release/Rosemewbot-Setup-0.6.7-x64.exe
+release/Rosemewbot-Setup-0.6.8-x64.exe
 ```
 
 用户流程只有三步：
@@ -22,9 +22,9 @@ release/Rosemewbot-Setup-0.6.7-x64.exe
 
 不需要 Docker Desktop，不需要用户安装 Python、Node.js，也不需要打开 PowerShell。
 
-下载应用安装包、首次准备、更新或修复组件时，需要能连接 GitHub（通常需要 VPN）。开始下载前请确认 GitHub 可以正常访问，并在下载完成前保持连接。
+下载应用安装包、首次准备、更新或修复组件时，需要能访问 GitHub 发布附件。v0.6.8 的桌面组件下载自动沿用 Windows 系统代理，包括 PAC 配置。使用代理软件时请开启“系统代理”，并在下载完成前保持连接。
 
-SnowLuma 原官方仓库及下载地址目前已不可公开访问。v0.6.7 使用 [XingYunStar 历史归档](https://github.com/XingYunStar/snowluma/releases/tag/v2.4.2)中的 v2.4.2 Windows x64 完整包，固定 SHA-256 校验；下载前检查来源，失败时自动切换，已校验缓存可离线复用。归档由第三方保存，不代表上游恢复维护。旧版准备失败的用户请先更新 Rosemewbot，再重新点击“一键完成首次准备”；已安装组件的用户点击“更新组件”。
+SnowLuma 配置同版本官方主地址与 [XingYunStar 历史归档备用地址](https://github.com/XingYunStar/snowluma/releases/tag/v2.4.2)，使用 v2.4.2 Windows x64 完整包并固定 SHA-256 校验。下载前检测主源；原官方地址不可用时自动使用归档，正式传输失败也会直接接续其他来源，无需再次点击。已校验缓存可离线复用。归档由第三方保存，不代表上游恢复维护。旧版准备失败的用户请先安装最新 Rosemewbot，再重新点击“一键完成首次准备”；已有组件需重新准备时点击“修复组件”。
 
 默认安装位置：
 
